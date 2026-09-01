@@ -55,3 +55,9 @@ krova-db-*
 
 # daisyUI migration Phase 0 baseline screenshots/token dumps (QA scaffolding, not app code)
 /.claude-migration-baselines-phase0
+
+# Brainer — derived index. rejected.json is your input, keep it.
+.brainer/index.db
+.brainer/index.db-*
+.brainer/models/
+.brainer/hooks/
