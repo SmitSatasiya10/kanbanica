@@ -6,7 +6,9 @@
 #
 # Point DATABASE_URL at your database in .env, then bring the stack up with BOTH
 # files. This overlay only *subtracts* — it never redefines app/worker/migrate,
-# so there is nothing here to keep in sync with the base file.
+# so there is nothing here to keep in sync with the base file. For the same
+# reason it layers onto either base file: docker-compose.yml (published image)
+# or docker-compose.build.yml (built from source).
 #
 # Requires Docker Compose >= 2.20 (for `depends_on.<svc>.required`).
 #

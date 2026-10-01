@@ -5,8 +5,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Emit a self-contained server (.next/standalone) for lean production/Docker images.
-  output: "standalone",
+  // No `output: "standalone"` on purpose. The Docker image (see Dockerfile)
+  // serves three roles from one build — web server, pg-boss worker, and the
+  // migration job — so it needs the real source tree, db/migrations, and a real
+  // node_modules, none of which a standalone bundle contains. It runs
+  // `next start` against .next instead.
   experimental: {
     // Next 15+ defaults the client Router Cache's staleTime for dynamic routes
     // to 0s, so navigating between any two dynamic routes re-fetches (and
@@ -22,10 +25,9 @@ const nextConfig = {
       dynamic: 30,
     },
   },
-  // sharp loads its native binary dynamically based on platform/arch, which the
-  // standalone output's static file-tracer can miss — keep it as a real
-  // require() against node_modules (explicitly copied in the Dockerfile) rather
-  // than letting Next.js try to trace/bundle it.
+  // sharp loads its native binary dynamically based on platform/arch, so keep it
+  // as a real require() against node_modules rather than letting Next.js bundle
+  // it — the recommendation in sharp's own docs.
   serverExternalPackages: ["sharp"],
   turbopack: {
     root: resolve(__dirname),

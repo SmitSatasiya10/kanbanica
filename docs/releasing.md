@@ -96,15 +96,23 @@ docker pull ghcr.io/stack256org/kanbanica:main
 a red build to catch a forgotten `docs:sync` before it merges; that gate isn't wired up
 yet, so today it only fails if you run it yourself.
 
-## What's still missing from this pipeline
+## The published image is the default install path
 
-Unlike some sibling projects using the same release mechanism, kanbanica doesn't yet have
-**a prebuilt-image path in `docker-compose.yml`.** The compose file currently always
-`build:`s from local source — it never references `ghcr.io/stack256org/kanbanica` as an
-`image:`. The published image exists after every release and the README now shows how to
-`docker pull` it directly, but the default self-hosting flow (`docker compose up -d`)
-still clones and builds rather than pulling. Worth revisiting before leaning on the
-published image as the primary install method.
+As of 0.2.0, `docker-compose.yml` references `ghcr.io/stack256org/kanbanica` as an
+`image:` — `docker compose up -d` pulls rather than builds, and `IMAGE_TAG` pins a
+version. Building from source moved to `docker-compose.build.yml`.
+
+That makes every release a real artifact people deploy, not just a tag, so two things
+matter more than they used to:
+
+- **One image covers `app`, `worker` and `migrate`**, differing only in `command:`. There
+  is no second image to publish or keep in lockstep — see the Dockerfile header for why
+  it ships real source instead of a standalone bundle.
+- **`latest` moves on every release.** The README's generated block tells self-hosters to
+  pin, but anyone who didn't will be upgraded by a plain `docker compose pull`. Breaking
+  deployment changes belong in an `### Upgrade notes` block in the changelog section,
+  because that section becomes the GitHub Release body — it's the only place most people
+  will read it.
 
 ---
 

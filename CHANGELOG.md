@@ -30,6 +30,57 @@ dated section, e.g.:
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-01
+
+### Added
+- Published-image install path: `docker compose up -d` now pulls
+  `ghcr.io/stack256org/kanbanica` instead of building on your server. New
+  `docker-compose.build.yml` covers build-from-source.
+- `docs/releasing.md` documenting the release pipeline, and product screenshots
+  in `docs/screenshots/`.
+- `pnpm docs:sync` / `pnpm docs:check` (`scripts/sync-readme.mjs`) keep the
+  README's `docker pull` block in step with `package.json`.
+
+### Changed
+- Docker: one image now serves all three roles (`app`, `worker`, `migrate`),
+  selected by `command:` — `Dockerfile.worker` is removed and
+  `next.config.mjs` no longer uses `output: "standalone"`. The image ships the
+  real source tree with a `--prod` `node_modules`, so `pnpm worker:start`,
+  `pnpm db:migrate:prod` and the admin-recovery scripts all run inside any
+  container. This also removes the hand-maintained copy of sharp's native
+  libvips that the standalone file-tracer needed.
+- `docker-compose.yml` now **pulls the published image** instead of building
+  locally (`docker compose up -d`, no `--build`), with `IMAGE_TAG` to pin a
+  version and `APP_PORT` to move the host port. Build-from-source moved to the
+  new `docker-compose.build.yml`; `docker-compose.external-db.yml` still
+  overlays either one. Volume names are unchanged, so existing deployments
+  reattach to their data.
+
+### Fixed
+- Documented commands that could not work: `pnpm worker:start` /
+  `pnpm db:migrate:prod` were listed for an image with no `pnpm` in it, and
+  `curl localhost:3000` was documented while the compose file bound no host
+  port.
+- README links, and the release workflow's handling of the commit CI actually
+  tested (`workflow_run.head_sha` rather than `github.sha`).
+
+### Upgrade notes
+- **Nothing to do for a `docker-compose.yml` deployment.** `docker compose pull
+  && docker compose up -d` is the whole upgrade. No migration needs manual
+  steps, no environment variable changed, and both volume names and the
+  runtime uid/gid (1001) are untouched.
+- **`Dockerfile.worker` no longer exists.** If your platform (Dokploy, Coolify,
+  Kubernetes, …) has a service configured to build from that path, point it at
+  the single published image with `command: pnpm worker:start` instead. Same for
+  a migration service: `command: pnpm db:migrate:prod`.
+- **`docker compose up -d --build` no longer builds anything** — the default
+  compose file has no `build:` section. Use
+  `docker compose -f docker-compose.build.yml up -d --build`.
+- **The app now binds a host port** (`${APP_PORT:-3000}:3000`), where before it
+  only used `expose:`. Behind a reverse proxy on the same Docker network,
+  replace that block with `expose: ["3000"]`, or set `APP_PORT` to something
+  free.
+
 ## [0.1.0] - 2026-08-17
 
 ### Added

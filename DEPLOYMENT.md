@@ -8,12 +8,22 @@ This guide runs Kanbanica in **production on your own server** so your team can 
 
 The stack runs as three long-lived services plus a one-shot migration step:
 
-| Service | What it does |
-|---------|--------------|
-| **postgres** | The database (with a persistent volume). |
-| **migrate** | Applies pending DB migrations, then exits. Runs automatically on `up`. |
-| **app** | The Next.js web server on port 3000. |
-| **worker** | Background jobs: email, notification digests, due-date reminders, sprint auto-close. **Run exactly one.** |
+| Service | Command | What it does |
+|---------|---------|--------------|
+| **postgres** | — | The database (with a persistent volume). |
+| **migrate** | `pnpm db:migrate:prod` | Applies pending DB migrations, then exits. Runs automatically on `up`. |
+| **app** | `pnpm start` | The Next.js web server on port 3000. |
+| **worker** | `pnpm worker:start` | Background jobs: email, notification digests, due-date reminders, sprint auto-close. **Run exactly one.** |
+
+`migrate`, `app` and `worker` are **the same image** with a different `command:` — see [Why one image](#why-one-image). You never build or pull a second one.
+
+Three compose files, and you use exactly one as the base:
+
+| File | When |
+|---|---|
+| `docker-compose.yml` | **The normal one.** Bundled Postgres, pulls the published image. |
+| `docker-compose.build.yml` | Building from source, because you changed the code. |
+| `docker-compose.external-db.yml` | An *overlay* for your own Postgres. Layers onto either of the above. |
 
 ---
 
@@ -25,10 +35,20 @@ The stack runs as three long-lived services plus a one-shot migration step:
 
 ---
 
-## 2. Get the code and create `.env`
+## 2. Get the compose file and create `.env`
+
+The published image means you don't need the repository — two files are enough:
 
 ```bash
-git clone https://github.com/sahaj-snapdevio/Kanbanica.git kanbanica
+mkdir kanbanica && cd kanbanica
+curl -O https://raw.githubusercontent.com/stack256org/kanbanica/main/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/stack256org/kanbanica/main/.env.example
+```
+
+Building from source instead (you're changing the code, or you want the image built on your own hardware)? Clone the repo and use `docker-compose.build.yml` everywhere this guide says `docker compose`:
+
+```bash
+git clone https://github.com/stack256org/kanbanica.git kanbanica
 cd kanbanica
 cp .env.example .env
 ```
@@ -274,10 +294,18 @@ Full walkthrough (account creation, DNS records, verification, troubleshooting):
 ## 4. Bring it up
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
-This builds the images, starts Postgres, runs migrations (the `migrate` service), then starts `app` and `worker`.
+This pulls the image, starts Postgres, runs migrations (the `migrate` service) to completion, then starts `app` and `worker`.
+
+Pin a version in production — `latest` moves with every release:
+
+```bash
+IMAGE_TAG=0.1.0 docker compose up -d
+```
+
+Building from source instead: `docker compose -f docker-compose.build.yml up -d --build`. On a small server, `next build` may need more heap than the default — prefix the build with `NODE_OPTIONS=--max-old-space-size=2048`.
 
 Check status and health:
 
@@ -300,10 +328,10 @@ Not needed for a normal first launch — use these only if you prefer a differen
 - **CLI scripts** — the recovery path if the sole admin was removed:
 
 ```bash
-docker compose exec worker node_modules/.bin/tsx scripts/make-admin.ts you@yourcompany.com
+docker compose exec app pnpm make:admin you@yourcompany.com
 ```
 
-> The worker image has no `pnpm` at runtime (see `Dockerfile.worker`), so call `tsx` directly rather than `pnpm make:admin`. The `app` container can't run it either — it's a standalone build with no `scripts/`.
+> Any of the three containers can run this — they're the same image, and it ships the real `scripts/` directory plus `pnpm`. Use `exec worker` instead if you'd rather not touch the serving container.
 
 | Script | Use when |
 |---|---|
@@ -400,7 +428,7 @@ The database dump captures every table (tasks, workspaces, custom fields, time e
 2. Restore the database (see above).
 3. Restore uploads (local volume tarball, or confirm the S3/R2 bucket is intact/replicated).
 4. Copy `.env` (or recreate it — see [step 3](#3-configure-env-for-production)) with the same `APP_SECRET` (rotating it invalidates all existing sessions and any encrypted data keyed on it).
-5. `docker compose up -d --build` and verify `/api/health` returns 200.
+5. `docker compose up -d` and verify `/api/health` returns 200.
 6. Spot-check: sign in, open a workspace, confirm attachments/avatars render (proves storage wiring, not just DB restore).
 
 There is currently no automated backup verification (e.g. periodic restore-to-scratch-DB drills) — treat backups as unverified until you've done a manual restore test at least once.
@@ -410,11 +438,13 @@ There is currently no automated backup verification (e.g. periodic restore-to-sc
 ## 8. Updating
 
 ```bash
-git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
-The `migrate` service applies any new migrations automatically before the app starts.
+The `migrate` service applies any new migrations automatically before the app starts. Building from source: `git pull && docker compose -f docker-compose.build.yml up -d --build`.
+
+Pinning a version? Bump `IMAGE_TAG` and re-run those two commands. Because `app`, `worker` and `migrate` all resolve to the same `${IMAGE_TAG}`, there is no way to end up running an app against a schema its worker never migrated to.
 
 ---
 
@@ -424,6 +454,26 @@ The `migrate` service applies any new migrations automatically before the app st
 - **Single app instance (for now).** Real-time updates and in-app notifications use an in-memory registry per process. Running **2+ app instances** behind a load balancer would drop cross-instance events — that needs a shared Redis pub/sub, which isn't implemented yet. One app instance is fine for typical team use.
 - **Database connections.** The pool is `max: 20` (`lib/db.ts`). Tune for your Postgres if needed.
 - **Changing the domain** is a restart, not a rebuild: edit `APP_URL` in `.env`, then `docker compose up -d`. Nothing deployment-specific is baked into the image.
+
+### Why one image
+
+`app`, `worker` and `migrate` are the same image with a different `command:`. That's deliberate, and it's why the image ships the real source tree instead of Next's `output: "standalone"` bundle:
+
+- The worker executes TypeScript through `tsx` (`scripts/worker.ts`), so it needs `scripts/` and `lib/` on disk.
+- `scripts/migrate.ts` reads the `.sql` files in `db/migrations` at runtime.
+- The admin-recovery scripts have to be runnable inside a live container.
+- Two images means two tags to keep in lockstep. One image makes app/worker schema drift impossible.
+
+What it is *not* is the whole dev environment. Runtime `node_modules` is a `--prod` install, so `drizzle-kit`, `typescript`, `vitest` and `embedded-postgres` (a Postgres server binary per platform) stay out. The practical consequence: inside a container use **`pnpm db:migrate:prod`**, never `pnpm db:migrate` — the latter is `drizzle-kit`, which is a devDependency and isn't there. Generating a new migration is a development task, not a production one.
+
+### Platforms that aren't Docker Compose
+
+**Dokploy, Coolify, CapRover, Portainer, Kubernetes, Swarm, ECS.** Deploy the published image three times with the commands in the table at the top of this guide. Two things to get right:
+
+- **The `migrate` step must finish before `app` and `worker` start.** Compose expresses this with `depends_on: {migrate: {condition: service_completed_successfully}}`. If your platform has no equivalent, deploying this repo's `docker-compose.yml` *as a Compose stack* (Dokploy and Coolify both support that) is the easiest way to get the ordering for free. Otherwise run the migration yourself on each upgrade: `docker compose run --rm migrate`, or `pnpm db:migrate:prod` in any container of the new image, before the new app serves traffic.
+- **The app alone is not a deployment.** Magic-link emails are enqueued through pg-boss, so with no worker running nobody can sign in by email.
+
+On the default `STORAGE_DRIVER=local`, mount a persistent volume at `/app/uploads` (S3/R2 need none), and check that your platform keeps volume names stable across redeploys — some don't (observed with Dokploy), which silently creates a new empty volume and orphans the old one instead of erroring. That's why the volumes in `docker-compose.yml` are pinned to literal names.
 
 ---
 
@@ -436,6 +486,8 @@ The `migrate` service applies any new migrations automatically before the app st
 | `self-signed certificate in certificate chain` connecting to a managed DB | Your provider uses a private CA. Use `?sslmode=require` rather than `?sslmode=verify-full`, or install the provider's CA in the image. |
 | `migrate` exits 1: database unreachable after 10 attempts | The external DB isn't reachable from the container. Check firewall/VPC rules, and use `host.docker.internal` (not `localhost`) if it runs on the Docker host. |
 | Using an external DB but a `postgres` container still starts | You forgot `-f docker-compose.external-db.yml`. Both `-f` flags are required, in that order. |
+| `pnpm db:migrate` in a container: "drizzle-kit: not found" | Expected — it's a devDependency and the image is a `--prod` install. Use `pnpm db:migrate:prod`, which runs `scripts/migrate.ts`. |
+| Deployed only the app image on Dokploy/Coolify: can't log in, schema missing | A single container isn't a deployment. You need the `migrate` run and a `worker` — see [Platforms that aren't Docker Compose](#platforms-that-arent-docker-compose). |
 | `depends_on` error mentioning `required` | Docker Compose is older than 2.20. Upgrade, or run `docker compose up -d app worker`. |
 | Users never receive the magic-link email | SMTP misconfigured or DNS (SPF/DKIM) failing. Check `docker compose logs worker`. |
 | New password signups can't log in ("Email not verified") | Expected once SMTP is set — they must click the verification link. See [Authentication](#authentication). |
