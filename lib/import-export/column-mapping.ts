@@ -63,7 +63,7 @@ export function buildMappableFields(
 }
 
 const HEADER_ALIASES: Record<ImportFieldKey, string[]> = {
-  title: ["title", "task name", "task", "name", "summary"],
+  title: ["title", "task name", "task title", "task", "name"],
   description: ["description", "details", "notes"],
   status: ["status", "state"],
   priority: ["priority"],

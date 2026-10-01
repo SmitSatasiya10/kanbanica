@@ -73,7 +73,7 @@ Common header names are auto-detected (case-insensitive, tolerant of `_`/`-`):
 
 | CSV Column (examples) | Kanbanica Field |
 |---|---|
-| Task Name, Name, Task, Summary | Title |
+| Title, Task, Task Name, Task Title, Name | Title |
 | Description, Details, Notes | Description |
 | Status, State | Status |
 | Priority | Priority |
@@ -83,6 +83,12 @@ Common header names are auto-detected (case-insensitive, tolerant of `_`/`-`):
 | Tags, Labels | Tags |
 | Parent, Parent Task, Parent Id | Parent Task |
 | *(exact custom field name)* | that custom field |
+
+Deliberately **not** auto-detected for Title, even though they're common
+spreadsheet headers: `Job Title`, `Position`, `Role`, `Designation`,
+`Employee Title`, `Summary`, `Subject` — these read as person/role or
+free-text fields, not a task's name, so guessing wrong here would silently
+mis-map data. Map them manually if you actually want one as the title.
 
 Detection is a convenience — every column's target can be changed in the
 mapping step, and a column can be left as "Do not import" to ignore it.

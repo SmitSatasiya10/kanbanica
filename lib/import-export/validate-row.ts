@@ -70,6 +70,12 @@ export interface ValidatedRow {
   warnings: string[];
 }
 
+// The mapping object is the single source of truth for which CSV column (if
+// any) feeds a given Kanbanica field. A column explicitly mapped to
+// IGNORE_TARGET ("Do not import") looks identical here to a field that was
+// never mapped at all — in both cases no header points at `target`, so the
+// raw CSV value is never read, matching every other optional field's
+// behavior generically (no per-field special-casing needed).
 function cell(
   row: Record<string, string>,
   mapping: Record<string, string>,
@@ -77,6 +83,15 @@ function cell(
 ): string {
   const header = Object.keys(mapping).find((h) => mapping[h] === target);
   return header ? (row[header] ?? "").trim() : "";
+}
+
+// Whether any CSV column is mapped to `target` at all (as opposed to that
+// column's cell merely being blank for this row). Used to gate warnings that
+// should only fire when the user mapped a column and left a row's value
+// empty — not when the field is globally unmapped/ignored, which should
+// silently fall back with no per-row noise.
+function isMapped(mapping: Record<string, string>, target: string): boolean {
+  return Object.values(mapping).includes(target);
 }
 
 function splitList(raw: string): string[] {
@@ -164,7 +179,12 @@ export async function validateImportRow(
   } else {
     const fallback = resolveDefaultStatus(context.listStatuses);
     statusId = fallback?.id ?? null;
-    if (fallback) {
+    // Only worth flagging when the user mapped a column to Status and this
+    // particular row left it blank. When Status itself is mapped to "Do not
+    // import" (or never mapped), every row would hit this path — that's the
+    // user's explicit choice to ignore the field entirely, not something to
+    // warn about per row.
+    if (fallback && isMapped(mapping, "status")) {
       warnings.push(`Status not specified — defaulting to "${fallback.name}"`);
     }
   }

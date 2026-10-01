@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CustomFieldRow } from "@/app/actions/custom-field";
+import { IGNORE_TARGET } from "@/lib/import-export/column-mapping";
 import {
   detectDuplicateRowIndexes,
   findUnmappedRequiredFields,
@@ -387,6 +388,115 @@ describe("validateImportRow", () => {
       );
       expect(result.status).toBe("invalid");
       expect(result.errors[0]).toContain("is not mapped to a column");
+    });
+  });
+
+  describe('columns mapped to "Do not import"', () => {
+    it("ignores a Status column mapped to Do not import — no validation, no warning, silently defaults", async () => {
+      const result = await validateImportRow(
+        { Title: "Fix bug", Status: "Open" },
+        { Title: "title", Status: IGNORE_TARGET },
+        baseContext(),
+        1
+      );
+      expect(result.status).toBe("valid");
+      expect(result.data?.statusId).toBe("status-open");
+      expect(result.errors).toEqual([]);
+      expect(result.warnings).toEqual([]);
+    });
+
+    it("ignores a Priority column mapped to Do not import, even with an invalid raw value", async () => {
+      const result = await validateImportRow(
+        { Title: "Fix bug", Priority: "SUPER_URGENT" },
+        { Title: "title", Priority: IGNORE_TARGET },
+        baseContext(),
+        1
+      );
+      expect(result.status).toBe("valid");
+      expect(result.data?.priority).toBe("NONE");
+      expect(result.errors).toEqual([]);
+    });
+
+    it("ignores an Assignee column mapped to Do not import — an unknown name causes no error", async () => {
+      const result = await validateImportRow(
+        { Title: "Fix bug", Assignee: "Nobody Real" },
+        { Title: "title", Assignee: IGNORE_TARGET },
+        baseContext(),
+        1
+      );
+      expect(result.status).toBe("valid");
+      expect(result.data?.assigneeIds).toEqual([]);
+      expect(result.errors).toEqual([]);
+    });
+
+    it("ignores a Tags column mapped to Do not import — nothing is created or imported", async () => {
+      const result = await validateImportRow(
+        { Title: "Fix bug", Tags: "bug, brand-new-tag" },
+        { Title: "title", Tags: IGNORE_TARGET },
+        baseContext(),
+        1
+      );
+      expect(result.status).toBe("valid");
+      expect(result.data?.tagNames).toEqual([]);
+      expect(result.warnings).toEqual([]);
+    });
+
+    it("ignores a Description column mapped to Do not import — description stays empty", async () => {
+      const result = await validateImportRow(
+        { Title: "Fix bug", Description: "Some notes" },
+        { Title: "title", Description: IGNORE_TARGET },
+        baseContext(),
+        1
+      );
+      expect(result.status).toBe("valid");
+      expect(result.data?.description).toBeNull();
+    });
+
+    it("still validates/imports normally for fields that ARE mapped, alongside ignored ones", async () => {
+      const result = await validateImportRow(
+        {
+          Title: "Fix bug",
+          Status: "Open",
+          Priority: "HIGH",
+          Assignee: "jane@example.com",
+          Tags: "bug",
+          Notes: "ignored text",
+        },
+        {
+          Title: "title",
+          Status: "status",
+          Priority: "priority",
+          Assignee: "assignees",
+          Tags: "tags",
+          Notes: IGNORE_TARGET,
+        },
+        baseContext(),
+        1
+      );
+      expect(result.status).toBe("valid");
+      expect(result.data).toMatchObject({
+        title: "Fix bug",
+        statusId: "status-open",
+        priority: "HIGH",
+        assigneeIds: ["user-jane"],
+        tagNames: ["bug"],
+        description: null,
+      });
+    });
+
+    it("still requires Title even when optional columns are ignored", async () => {
+      // Priority stays mapped (and non-blank) so the row isn't treated as
+      // fully empty — isolating the Title check from the separate
+      // blank-row-skip behavior.
+      const result = await validateImportRow(
+        { Title: "", Status: "Open", Priority: "HIGH" },
+        { Title: "title", Status: IGNORE_TARGET, Priority: "priority" },
+        baseContext(),
+        1
+      );
+      expect(result.status).toBe("invalid");
+      expect(result.errors).toContain("Title is required");
+      expect(result.data?.statusId).toBe("status-open");
     });
   });
 });

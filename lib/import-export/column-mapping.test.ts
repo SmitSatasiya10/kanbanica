@@ -53,6 +53,36 @@ describe("autoDetectMapping", () => {
     const targets = Object.values(mapping).filter((t) => t !== IGNORE_TARGET);
     expect(new Set(targets).size).toBe(targets.length);
   });
+
+  it.each(["Title", "Task", "Task Name", "Task Title", "Name"])(
+    "maps %s to Title",
+    (header) => {
+      const mapping = autoDetectMapping([header], []);
+      expect(mapping[header]).toBe("title");
+    }
+  );
+
+  it("does not auto-map ambiguous/person-related headers to Title", () => {
+    const mapping = autoDetectMapping(
+      [
+        "Job Title",
+        "Position",
+        "Role",
+        "Designation",
+        "Employee Title",
+        "Summary",
+        "Subject",
+      ],
+      []
+    );
+    expect(mapping["Job Title"]).toBe(IGNORE_TARGET);
+    expect(mapping.Position).toBe(IGNORE_TARGET);
+    expect(mapping.Role).toBe(IGNORE_TARGET);
+    expect(mapping.Designation).toBe(IGNORE_TARGET);
+    expect(mapping["Employee Title"]).toBe(IGNORE_TARGET);
+    expect(mapping.Summary).toBe(IGNORE_TARGET);
+    expect(mapping.Subject).toBe(IGNORE_TARGET);
+  });
 });
 
 describe("buildMappableFields", () => {
