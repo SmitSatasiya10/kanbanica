@@ -194,6 +194,14 @@ uploads/                   ← local file storage (STORAGE_DRIVER=local only), g
 - `FacetOptionList` (`components/filters/facet-filter.tsx`) took on optional `searchPlaceholder` / `clearLabel` / `showClearDivider` / `maxListHeight` props for the Columns/Filters pickers — all default to the original behavior, so don't assume every caller needs them.
 - Full spec: `docs/custom-fields.md`.
 
+### Task Import/Export (CSV, MVP)
+- **Export** (`app/api/lists/[listId]/export`, `app/api/spaces/[spaceId]/export`, both `GET` route handlers): generates CSV for the current list, a selection of tasks (`?taskIds=`), or a whole project. Gated by `requireViewAccess` only — never exposes data outside the caller's permissions. Core query logic lives in `lib/import-export/export-tasks.ts`; CSV generation is `lib/import-export/csv.ts` (`papaparse`-backed, RFC4180-correct escaping).
+- **Import** is a route-handler pipeline, not server actions (`app/api/lists/[listId]/import/validate` and `.../import/confirm`) — same reasoning as attachment uploads: avoids the smaller server-action body-size limit. Upload → Map → Preview → Confirm → Result wizard lives in `components/import-export/import-wizard.tsx`, gated by the same edit-level permission `createTask` requires.
+- **Validation is pure and reused in both steps**: `lib/import-export/validate-row.ts`'s `validateImportRow()` takes a pre-fetched `ValidationContext` (no DB calls of its own) so the `/validate` preview and the `/confirm` re-check run identical rules against possibly-different data.
+- **Bulk creation does not loop `createTask()`** (`lib/import-export/bulk-import-tasks.ts`) — it mirrors `duplicateTask`'s bulk-insert approach (batched `taskSeq` reservation, one transaction, map-based parent-id resolution) instead, since looping would mean N sequential `taskSeq` round-trips and N space-wide notification fan-outs. It still enforces the exact same rules `createTask`/`setCustomFieldValue` do (reuses `validateCustomFieldValue` directly) — batching the business logic, not bypassing it.
+- MVP limits: **200 rows / 2 MB** per file (`lib/import-export/limits.ts`), enforced client- and server-side. Raising this later means wiring a pg-boss job around the same `bulkImportTasks()` call, not a rewrite (`lib/worker/` already exists).
+- Full spec: `docs/import-export.md`.
+
 ### Bug Fix Documentation
 - **Whenever a bug is fixed, record it as two Markdown files in `docs/bugs/`** (create the folder if missing):
   1. `{YYYY-MM-DD}-bug-{bug-title}.md` — describes the bug: symptom, where it happened, root cause.
@@ -224,6 +232,7 @@ uploads/                   ← local file storage (STORAGE_DRIVER=local only), g
 | Notifications | `docs/notifications.md` |
 | Search & Filters | `docs/search-and-filters.md` |
 | Custom Fields | `docs/custom-fields.md` |
+| Task Import/Export | `docs/import-export.md` |
 | Permissions | `docs/permission-model.md` |
 | Settings | `docs/settings.md` |
 | Integrations | `docs/integrations.md` |

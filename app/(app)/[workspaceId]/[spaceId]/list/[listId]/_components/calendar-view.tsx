@@ -12,7 +12,16 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import { CaretLeftIcon, CaretRightIcon, PlusIcon } from "@phosphor-icons/react";
+import {
+  ArchiveIcon,
+  ArrowsDownUpIcon,
+  CaretLeftIcon,
+  CaretRightIcon,
+  DotsThreeIcon,
+  DownloadSimpleIcon,
+  KeyboardIcon,
+  PlusIcon,
+} from "@phosphor-icons/react";
 import {
   addDays,
   addMonths,
@@ -33,11 +42,13 @@ import {
 import { useRouter } from "next/navigation";
 import * as React from "react";
 import { toast } from "sonner";
-import { updateTask } from "@/app/actions/task";
+import { archiveTask, unarchiveTask, updateTask } from "@/app/actions/task";
 import { UserAvatar } from "@/components/common/user-avatar";
 import { FacetFilter } from "@/components/filters/facet-filter";
+import { triggerExportDownload } from "@/components/import-export/export-button";
 import { useRealtimePause } from "@/components/realtime/realtime-provider";
 import { CreateTaskModal } from "@/components/task/create-task-modal";
+import { KeyboardShortcutsDialog } from "@/components/task/keyboard-shortcuts-dialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -49,6 +60,14 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Popover,
   PopoverContent,
@@ -66,8 +85,17 @@ import { PRIORITY_OPTIONS } from "@/lib/filters/options";
 import { filterTasks } from "@/lib/filters/task-filter";
 import { PRIORITY_CONFIG, type Priority } from "@/lib/priority-config";
 import { setTaskNavContext } from "@/lib/task-nav-context";
+import { toastWithUndo } from "@/lib/undo-toast";
 import { cn } from "@/lib/utils";
 import { MobileCalendar } from "./calendar-view-mobile";
+
+const PRIORITY_ORDER: Record<Priority, number> = {
+  NONE: 0,
+  LOW: 1,
+  MEDIUM: 2,
+  HIGH: 3,
+  URGENT: 4,
+};
 
 export type Status = {
   id: string;
@@ -126,6 +154,11 @@ export function CalendarView({
   tasks,
   members = [],
   canEdit = false,
+  archivedLoading,
+  archivedTasks,
+  onArchivedChanged,
+  onToggleArchived,
+  showArchived,
 }: {
   workspaceId: string;
   spaceId: string;
@@ -134,6 +167,11 @@ export function CalendarView({
   tasks: CalendarTask[];
   members?: Member[];
   canEdit?: boolean;
+  archivedLoading?: boolean;
+  archivedTasks?: { id: string; title: string; seqNumber: number }[];
+  onArchivedChanged?: () => Promise<void>;
+  onToggleArchived?: () => void;
+  showArchived?: boolean;
 }) {
   const router = useRouter();
   const pauseRealtime = useRealtimePause();
@@ -150,6 +188,13 @@ export function CalendarView({
   const [statusFilter, setStatusFilter] = React.useState<string[]>([]);
   const [priorityFilter, setPriorityFilter] = React.useState<string[]>([]);
   const [assigneeFilter, setAssigneeFilter] = React.useState<string[]>([]);
+
+  // Sort — same "name"/"priority" model as Board's Sort control, applied
+  // within each day's task list (the day itself still determines placement).
+  const [sortBy, setSortBy] = React.useState<"name" | "priority" | null>(null);
+  const [sortOrder, setSortOrder] = React.useState<"asc" | "desc">("asc");
+  const [sortMenuOpen, setSortMenuOpen] = React.useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
 
   // Current month — persisted per list so we return to the last month viewed.
   // Read from localStorage in an effect, not the useState initializer: the
@@ -245,12 +290,26 @@ export function CalendarView({
   // (dueDateEnd ?? dueDateStart). The start date is deliberately ignored for
   // placement so the month view shows deadlines, not multi-day duration bars.
   const tasksByDay = React.useMemo(() => {
-    const filtered = filterTasks(localTasks, {
+    let filtered = filterTasks(localTasks, {
       searchQuery,
       statusFilter,
       priorityFilter,
       assigneeFilter,
     });
+
+    if (sortBy === "name") {
+      filtered = [...filtered].sort((a, b) =>
+        sortOrder === "asc"
+          ? a.title.localeCompare(b.title)
+          : b.title.localeCompare(a.title)
+      );
+    } else if (sortBy === "priority") {
+      filtered = [...filtered].sort((a, b) => {
+        const diff = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
+        return sortOrder === "asc" ? diff : -diff;
+      });
+    }
+
     const map = new Map<string, CalendarTask[]>();
     for (const t of filtered) {
       const anchor = primaryDay(t);
@@ -266,22 +325,47 @@ export function CalendarView({
       }
     }
     return map;
-  }, [localTasks, searchQuery, statusFilter, priorityFilter, assigneeFilter]);
+  }, [
+    localTasks,
+    searchQuery,
+    statusFilter,
+    priorityFilter,
+    assigneeFilter,
+    sortBy,
+    sortOrder,
+  ]);
 
   // Previous/Next Task nav context: the visible 6-week grid in chronological
   // order, each day's tasks in their displayed order — handed to Task Detail
   // so Prev/Next walks it without a DB query.
-  const visibleOrderedTaskIds = React.useMemo(
-    () =>
-      gridDays.flatMap((day) =>
-        (tasksByDay.get(dayKey(day)) ?? []).map((t) => t.id)
-      ),
-    [gridDays, tasksByDay]
-  );
+  const visibleOrderedTaskIds = React.useMemo(() => {
+    const ids: string[] = [];
+    if (showArchived && archivedTasks) {
+      for (const t of archivedTasks) {
+        ids.push(t.id);
+      }
+    }
+    for (const day of gridDays) {
+      for (const t of tasksByDay.get(dayKey(day)) ?? []) {
+        ids.push(t.id);
+      }
+    }
+    return ids;
+  }, [showArchived, archivedTasks, gridDays, tasksByDay]);
 
   function openTask(taskId: string) {
     setTaskNavContext({ taskIds: visibleOrderedTaskIds });
     router.push(`/${workspaceId}/task/${taskId}?from=calendar`);
+  }
+
+  // Shared by the desktop and mobile archived-task panels.
+  async function handleUnarchive(taskId: string) {
+    await unarchiveTask(workspaceId, spaceId, listId, taskId);
+    await onArchivedChanged?.();
+    toastWithUndo("Task unarchived", async () => {
+      await archiveTask(workspaceId, spaceId, listId, taskId);
+      await onArchivedChanged?.();
+    });
   }
 
   // Compute new dates for a drop, preserving span for real ranges.
@@ -423,6 +507,110 @@ export function CalendarView({
               />
             )}
 
+            {/* Sort — same name/priority model as Board's Sort control,
+                reordering tasks within each day. */}
+            <Popover onOpenChange={setSortMenuOpen} open={sortMenuOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  className="flex h-8 items-center gap-1.5 rounded-lg border border-base-300 px-3 text-xs font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content"
+                  type="button"
+                >
+                  <ArrowsDownUpIcon className="size-3.5" />
+                  Sort:{" "}
+                  {sortBy
+                    ? sortBy.charAt(0).toUpperCase() + sortBy.slice(1)
+                    : "None"}
+                </button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="start"
+                className="flex w-44 flex-col gap-0.5 p-1"
+              >
+                <button
+                  className={cn(
+                    "rounded px-2 py-1.5 text-left text-xs font-semibold text-base-content hover:bg-base-200",
+                    !sortBy && "bg-base-200"
+                  )}
+                  onClick={() => {
+                    setSortBy(null);
+                    setSortMenuOpen(false);
+                  }}
+                  type="button"
+                >
+                  None
+                </button>
+                <button
+                  className={cn(
+                    "rounded px-2 py-1.5 text-left text-xs font-semibold text-base-content hover:bg-base-200",
+                    sortBy === "name" && "bg-base-200"
+                  )}
+                  onClick={() => {
+                    setSortBy("name");
+                    setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
+                    setSortMenuOpen(false);
+                  }}
+                  type="button"
+                >
+                  Task Name
+                </button>
+                <button
+                  className={cn(
+                    "rounded px-2 py-1.5 text-left text-xs font-semibold text-base-content hover:bg-base-200",
+                    sortBy === "priority" && "bg-base-200"
+                  )}
+                  onClick={() => {
+                    setSortBy("priority");
+                    setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
+                    setSortMenuOpen(false);
+                  }}
+                  type="button"
+                >
+                  Priority
+                </button>
+              </PopoverContent>
+            </Popover>
+
+            {/* More — secondary actions, same "More" menu pattern as
+                List/Board (Export/Archived/Shortcuts). Import is
+                deliberately excluded: import targets a specific list/status
+                context, which Calendar's date-based toolbar doesn't provide. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  aria-label="More actions"
+                  className="flex size-8 items-center justify-center rounded-lg border border-base-300 text-base-content/60 transition-colors hover:bg-base-200/30 hover:text-base-content"
+                  title="More actions"
+                  type="button"
+                >
+                  <DotsThreeIcon className="size-4" weight="bold" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-52">
+                <DropdownMenuItem
+                  onClick={() =>
+                    triggerExportDownload({ kind: "list", listId })
+                  }
+                >
+                  <DownloadSimpleIcon className="size-3.5" />
+                  Export Tasks (CSV)
+                </DropdownMenuItem>
+                {onToggleArchived && (
+                  <DropdownMenuCheckboxItem
+                    checked={showArchived}
+                    onCheckedChange={() => onToggleArchived()}
+                  >
+                    <ArchiveIcon className="size-3.5" />
+                    Archived Tasks
+                  </DropdownMenuCheckboxItem>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setShortcutsOpen(true)}>
+                  <KeyboardIcon className="size-3.5" />
+                  Keyboard Shortcuts
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
             <div className="ml-auto flex items-center gap-1">
               <button
                 aria-label="Previous month"
@@ -471,6 +659,63 @@ export function CalendarView({
           </div>
         </div>
 
+        {/* Archived tasks — same markup/behavior as List/Board's archived
+            section, shown above the grid when toggled from the More menu. */}
+        {showArchived && (
+          <div className="mx-4 mt-3 hidden overflow-hidden rounded-xl border border-base-300 bg-base-200/20 md:block">
+            <div className="flex items-center gap-2 select-none border-b border-base-300 bg-base-200/50 px-4 py-2 text-xs font-bold uppercase tracking-wide text-base-content/60">
+              <ArchiveIcon className="size-4" />
+              Archived ({archivedTasks?.length ?? 0})
+            </div>
+            {(!archivedTasks || archivedTasks.length === 0) && (
+              <div className="px-4 py-6 text-center text-xs italic text-base-content/60">
+                {archivedLoading
+                  ? "Loading archived tasks…"
+                  : "No archived tasks"}
+              </div>
+            )}
+            <div className="divide-y divide-border">
+              {archivedTasks?.map((t) => (
+                // biome-ignore lint/a11y/useSemanticElements: wraps a nested interactive "Unarchive" button, so it can't literally be a <button>; kept keyboard-accessible via role+tabIndex+onKeyDown
+                <div
+                  className="group flex cursor-pointer items-center gap-3 px-4 py-2 transition-colors hover:bg-base-200/30"
+                  key={t.id}
+                  onClick={() => openTask(t.id)}
+                  onKeyDown={(e) => {
+                    if (e.target !== e.currentTarget) {
+                      return;
+                    }
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      openTask(t.id);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <span className="shrink-0 select-none font-mono text-2xs text-base-content/60">
+                    #{t.seqNumber}
+                  </span>
+                  <span className="flex-1 truncate text-[13px] font-medium text-base-content/60 line-through">
+                    {t.title}
+                  </span>
+                  <button
+                    className="invisible flex shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-lg border border-base-300 bg-base-100 px-2.5 py-1 text-2xs font-semibold text-base-content/60 transition-colors group-hover:visible hover:text-base-content"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      await handleUnarchive(t.id);
+                    }}
+                    type="button"
+                  >
+                    <ArchiveIcon className="size-3.5 text-base-content/60" />
+                    Unarchive
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Month grid */}
         <DndContext
           collisionDetection={closestCenter}
@@ -510,10 +755,13 @@ export function CalendarView({
             sharing all state/handlers from this component. */}
         <MobileCalendar
           agendaDay={agendaDay}
+          archivedLoading={archivedLoading}
+          archivedTasks={archivedTasks}
           assigneeFilter={assigneeFilter}
           canEdit={canEdit}
           gridDays={gridDays}
           isPending={isPending}
+          listId={listId}
           members={members}
           mobileFilterCount={mobileFilterCount}
           mobileFiltersOpen={mobileFiltersOpen}
@@ -524,13 +772,20 @@ export function CalendarView({
           onMobileFiltersOpenChange={setMobileFiltersOpen}
           onModeChange={setMobileMode}
           onNavigate={goToMonth}
+          onOpenShortcuts={() => setShortcutsOpen(true)}
           onOpenTask={openTask}
           onPriorityFilterChange={setPriorityFilter}
           onResetFilters={resetMobileFilters}
           onSearchChange={setSearchQuery}
+          onSortByChange={setSortBy}
+          onSortOrderChange={setSortOrder}
           onStatusFilterChange={setStatusFilter}
+          onToggleArchived={onToggleArchived}
+          onUnarchiveTask={handleUnarchive}
           priorityFilter={priorityFilter}
           searchQuery={searchQuery}
+          showArchived={showArchived}
+          sortBy={sortBy}
           statusById={statusById}
           statuses={statuses}
           statusFilter={statusFilter}
@@ -592,6 +847,11 @@ export function CalendarView({
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        <KeyboardShortcutsDialog
+          onOpenChange={setShortcutsOpen}
+          open={shortcutsOpen}
+        />
       </div>
     </TooltipProvider>
   );

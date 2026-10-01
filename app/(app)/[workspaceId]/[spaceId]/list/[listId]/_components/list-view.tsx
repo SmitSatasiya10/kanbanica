@@ -30,6 +30,7 @@ import {
   CheckSquareIcon,
   ColumnsIcon,
   DotsThreeIcon,
+  DownloadSimpleIcon,
   FunnelIcon,
   GearIcon,
   HashIcon,
@@ -43,6 +44,7 @@ import {
   PushPinSlashIcon,
   TextAaIcon,
   TrashIcon,
+  UploadSimpleIcon,
   UserIcon,
   UserPlusIcon,
   XIcon,
@@ -92,6 +94,15 @@ import {
 } from "@/components/filters/facet-filter";
 import { FilterBuilder } from "@/components/filters/filter-builder";
 import { FilterChip } from "@/components/filters/filter-chip";
+import {
+  ExportMenuRow,
+  ExportSelectedButton,
+  triggerExportDownload,
+} from "@/components/import-export/export-button";
+import {
+  ImportMenuRow,
+  ImportWizardDialog,
+} from "@/components/import-export/import-wizard";
 import { useRealtimePause } from "@/components/realtime/realtime-provider";
 import { CreateTaskModal } from "@/components/task/create-task-modal";
 import { KeyboardShortcutsDialog } from "@/components/task/keyboard-shortcuts-dialog";
@@ -114,6 +125,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { isOverlayOpen } from "@/components/ui/overlay-stack";
 import {
@@ -1768,6 +1787,14 @@ function BulkActionBar({
 
         <div className="h-4 w-px bg-white/20 mx-1" />
 
+        {/* Export selected tasks to CSV */}
+        <ExportSelectedButton
+          scope={{ kind: "list", listId }}
+          taskIds={[...selectedIds]}
+        />
+
+        <div className="h-4 w-px bg-white/20 mx-1" />
+
         {/* Archive — requires edit permission */}
         {canEdit && (
           <button
@@ -1918,6 +1945,9 @@ export function ListView({
     null
   );
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
+  // Desktop "More" menu's Import dialog — mobile opens the same dialog via
+  // ImportMenuRow's own internal state instead (see the mobile toolbar block).
+  const [importOpen, setImportOpen] = React.useState(false);
   // Mobile-only "Filters" bottom sheet (see the mobile toolbar block below) —
   // desktop keeps every filter inline, so this only matters under `md:`.
   const [mobileFiltersOpen, setMobileFiltersOpen] = React.useState(false);
@@ -3040,10 +3070,12 @@ export function ListView({
                   )}
                 </div>
 
-                {/* Secondary: Manage Custom Fields / Archived / Keyboard
-                    shortcuts. `shrink-0` and no `flex-wrap` keep this block
-                    non-breaking — it either sits on the primary row or wraps
-                    to a new row entirely, never split mid-group. */}
+                {/* Secondary: Manage Custom Fields / More actions. `shrink-0`
+                    and no `flex-wrap` keep this block non-breaking — it
+                    either sits on the primary row or wraps to a new row
+                    entirely, never split mid-group. Export/Import/Archived/
+                    Keyboard Shortcuts live inside "More" (below) instead of
+                    as separate icons, so this row stays compact. */}
                 <div className="flex items-center gap-4 shrink-0">
                   <div className="h-5 w-px shrink-0 bg-base-300" />
 
@@ -3069,32 +3101,51 @@ export function ListView({
                     </button>
                   )}
 
-                  {/* Archived */}
-                  {onToggleArchived && (
-                    <button
-                      className={cn(
-                        "flex h-8 shrink-0 select-none items-center gap-1.5 rounded-md border px-2.5 text-xs font-semibold transition-colors",
-                        showArchived
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-base-300 text-base-content/60 hover:bg-base-200 hover:text-base-content"
+                  {/* More actions — Export, Import, Archived, Keyboard
+                      Shortcuts. Keeps the main toolbar row compact instead of
+                      stacking a separate icon per secondary action. */}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        aria-label="More actions"
+                        className="flex items-center justify-center size-8 rounded-lg border border-base-300 text-base-content/60 hover:bg-base-200/30 hover:text-base-content transition-colors cursor-pointer"
+                        title="More actions"
+                        type="button"
+                      >
+                        <DotsThreeIcon className="size-4" weight="bold" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-52">
+                      <DropdownMenuItem
+                        onClick={() =>
+                          triggerExportDownload({ kind: "list", listId })
+                        }
+                      >
+                        <DownloadSimpleIcon className="size-3.5" />
+                        Export Tasks (CSV)
+                      </DropdownMenuItem>
+                      {canManage && (
+                        <DropdownMenuItem onClick={() => setImportOpen(true)}>
+                          <UploadSimpleIcon className="size-3.5" />
+                          Import Tasks (CSV)
+                        </DropdownMenuItem>
                       )}
-                      onClick={() => onToggleArchived()}
-                      type="button"
-                    >
-                      <ArchiveIcon className="size-3.5" /> Archived
-                    </button>
-                  )}
-
-                  {/* Keyboard shortcuts */}
-                  <button
-                    aria-label="Keyboard shortcuts"
-                    className="flex items-center justify-center size-8 rounded-lg border border-base-300 text-base-content/60 hover:bg-base-200/30 hover:text-base-content transition-colors cursor-pointer"
-                    onClick={() => setShortcutsOpen(true)}
-                    title="Keyboard Shortcuts (?)"
-                    type="button"
-                  >
-                    <KeyboardIcon className="size-4" />
-                  </button>
+                      {onToggleArchived && (
+                        <DropdownMenuCheckboxItem
+                          checked={showArchived}
+                          onCheckedChange={() => onToggleArchived()}
+                        >
+                          <ArchiveIcon className="size-3.5" />
+                          Archived Tasks
+                        </DropdownMenuCheckboxItem>
+                      )}
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={() => setShortcutsOpen(true)}>
+                        <KeyboardIcon className="size-3.5" />
+                        Keyboard Shortcuts
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               </div>
 
@@ -3366,6 +3417,14 @@ export function ListView({
                         Manage Custom Fields
                       </button>
                     )}
+                    <ExportMenuRow scope={{ kind: "list", listId }} />
+                    {canManage && (
+                      <ImportMenuRow
+                        listId={listId}
+                        spaceId={spaceId}
+                        workspaceId={workspaceId}
+                      />
+                    )}
                     {columnOptions.length > 0 && (
                       <div className="px-1 py-1.5">
                         <p className="px-1.5 pb-1 text-2xs font-bold uppercase tracking-wide text-base-content/60">
@@ -3616,6 +3675,16 @@ export function ListView({
       <KeyboardShortcutsDialog
         onOpenChange={setShortcutsOpen}
         open={shortcutsOpen}
+      />
+
+      {/* Opened from the desktop "More" menu above; mobile opens the same
+          dialog via ImportMenuRow's own internal state instead. */}
+      <ImportWizardDialog
+        listId={listId}
+        onOpenChange={setImportOpen}
+        open={importOpen}
+        spaceId={spaceId}
+        workspaceId={workspaceId}
       />
     </>
   );

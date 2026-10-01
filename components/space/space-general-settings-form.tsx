@@ -5,6 +5,7 @@ import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { archiveSpace, deleteSpace, updateSpace } from "@/app/actions/space";
 import { EmojiPickerPopover } from "@/components/common/emoji-picker-popover";
+import { ExportMenuRow } from "@/components/import-export/export-button";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -183,6 +184,26 @@ export function SpaceGeneralSettingsForm({
           </Button>
         </div>
       </form>
+
+      <Separator />
+
+      <div className="space-y-4">
+        <h3 className="text-sm font-semibold">Export</h3>
+        <div className="flex flex-col gap-3 rounded-md border border-base-300 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Export All Tasks (CSV)</p>
+            <p className="text-xs text-base-content/60 mt-0.5">
+              Downloads every task across this project&rsquo;s lists you have
+              access to.
+            </p>
+          </div>
+          <ExportMenuRow
+            className="w-auto shrink-0 justify-start border border-base-300 px-3"
+            label="Export CSV"
+            scope={{ kind: "space", spaceId }}
+          />
+        </div>
+      </div>
 
       <Separator />
 
