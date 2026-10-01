@@ -27,7 +27,7 @@ Kanbanica runs as **two processes** sharing one PostgreSQL database:
                          └────────────────────────────────┘
 ```
 
-- **Web** (`next start` / `.next/standalone/server.js`) serves the UI and API and **enqueues** jobs.
+- **Web** (`pnpm start` → `next start`) serves the UI and API and **enqueues** jobs.
 - **Worker** (`pnpm worker:start`) **consumes** jobs. It must run as **exactly one** process.
 - Both read configuration through the Zod-validated `lib/env.ts`.
 
@@ -87,4 +87,6 @@ docs/                per-feature specifications
 ## Deployment shape
 
 - **Dev:** `pnpm db:local` + `pnpm dev` (see [SETUP.md](./SETUP.md)).
-- **Self-host:** Docker Compose runs `postgres` + a one-shot `migrate` + `app` + `worker` (see [DEPLOYMENT.md](./DEPLOYMENT.md)). `next.config.mjs` uses `output: "standalone"` for a lean app image; migrations apply via `scripts/migrate.ts`.
+- **Self-host:** Docker Compose runs `postgres` + a one-shot `migrate` + `app` + `worker` (see [DEPLOYMENT.md](./DEPLOYMENT.md)).
+- **One image, three roles.** `app`, `worker` and `migrate` all run the single image built by `Dockerfile`, differing only in `command:` (`pnpm start` / `pnpm worker:start` / `pnpm db:migrate:prod`). It therefore ships the real source tree and a `--prod` `node_modules` rather than `output: "standalone"` — the worker executes TypeScript through `tsx`, `scripts/migrate.ts` reads `db/migrations` off disk, and the admin-recovery scripts have to be runnable inside a live container. One image also means no way for an app and worker to drift onto different schema versions.
+- Migrations apply via `scripts/migrate.ts` (drizzle-orm's migrator, with a DB-wait backoff and a `pg_advisory_lock`), never `drizzle-kit` — it's a devDependency and isn't in the image.

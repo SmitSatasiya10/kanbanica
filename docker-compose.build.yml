@@ -1,0 +1,96 @@
+# Kanbanica, built from this checkout instead of pulling a published image.
+#
+#   docker compose -f docker-compose.build.yml up -d --build
+#
+# Use this when you are changing the code, or when you want an image built on
+# your own hardware. For a normal deployment use docker-compose.yml, which pulls
+# a prebuilt multi-arch image — `next build` on a small VPS is slow and wants
+# more RAM than you'd expect.
+#
+# This file is a complete alternative to docker-compose.yml, not an overlay:
+# pass only `-f docker-compose.build.yml`. It builds the same single image used
+# for all three roles, so the build runs once and is reused by app, worker and
+# migrate.
+#
+# Bringing your own database? Layer the external-db overlay on top:
+#   docker compose -f docker-compose.build.yml -f docker-compose.external-db.yml up -d --build
+#
+# Build running out of memory on a small server? Give Node a bigger heap for the
+# build only:
+#   NODE_OPTIONS=--max-old-space-size=2048 docker compose -f docker-compose.build.yml build
+
+x-build: &build
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      APP_VERSION: ${APP_VERSION:-dev}
+  image: kanbanica:local
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kanbanica}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kanbanica}
+      POSTGRES_DB: ${POSTGRES_DB:-kanbanica}
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kanbanica} -d ${POSTGRES_DB:-kanbanica}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    <<: *build
+    command: pnpm db:migrate:prod
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    <<: *build
+    command: pnpm start
+    restart: unless-stopped
+    env_file: .env
+    # Behind a reverse proxy on the same Docker network? Replace with
+    # `expose: ["3000"]`. APP_PORT, not PORT — see docker-compose.yml.
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      PORT: 3000
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *build
+    command: pnpm worker:start
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      disable: true
+
+volumes:
+  # Same literal names as docker-compose.yml, so switching between the two files
+  # reattaches to the same data. See that file for why they're pinned.
+  pgdata:
+    name: kanbanica-kanbanica-72jxmn_pgdata
+  uploads:
+    name: kanbanica-kanbanica-72jxmn_uploads

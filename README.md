@@ -156,8 +156,10 @@ Deploy Kanbanica for your team with Docker Compose — Postgres, the app, and th
 
 ```bash
 cp .env.example .env   # set DATABASE_URL, APP_SECRET, APP_URL — everything else is optional
-docker compose up -d --build
+docker compose up -d
 ```
+
+That pulls a prebuilt multi-arch image rather than running `next build` on your server. Changing the code? Use `docker compose -f docker-compose.build.yml up -d --build` instead.
 
 **Already have a PostgreSQL?** Point `DATABASE_URL` at it and add the overlay — the bundled database container is never started, and migrations still run automatically before the app boots.
 
@@ -171,15 +173,17 @@ Full production guide, HTTPS/reverse proxy setup, and backup/restore: **[DEPLOYM
 
 ## Deploying Somewhere Else
 
-Kanbanica ships one Dockerfile for the app (`Dockerfile`) and one for the worker (`Dockerfile.worker`) — any platform that runs a container can run it, not just Docker Compose.
+Kanbanica ships **one** image — any platform that runs a container can run it, not just Docker Compose.
 
-**Coolify, Dokploy, CapRover, Portainer, Kubernetes, Docker Swarm, ECS.** Run three services from the same two images:
+**Coolify, Dokploy, CapRover, Portainer, Kubernetes, Docker Swarm, ECS.** Run three services from that one image, changing only the command:
 
-| Service | Built from | Command | Notes |
-|---------|-----------|---------|-------|
-| app | `Dockerfile` | *(default image `CMD`)* | Serves on port 3000. Probe `GET /api/health`. |
-| worker | `Dockerfile.worker` | `pnpm worker:start` | No web port — background jobs and outgoing email don't run without it. |
-| migrate | `Dockerfile.worker` | `pnpm db:migrate:prod` | Run once to completion before `app`/`worker` start on each deploy. |
+| Service | Command | Notes |
+|---------|---------|-------|
+| app | `pnpm start` *(default image `CMD`)* | Serves on port 3000. Probe `GET /api/health`. |
+| worker | `pnpm worker:start` | No web port. Background jobs and outgoing email — including magic-link sign-in — don't run without it. Run exactly one. |
+| migrate | `pnpm db:migrate:prod` | Run once to completion before `app`/`worker` start on each deploy. Safe to run concurrently: it takes a `pg_advisory_lock`. |
+
+Because all three share one image and one tag, an app and a worker can never drift onto different schema versions.
 
 On the default `STORAGE_DRIVER=local`, mount a persistent volume at `/app/uploads` — S3/R2 need none. If your platform generates its own Compose file rather than using `docker-compose.yml` directly, double-check it keeps volume names stable across redeploys — some tools (observed with Dokploy) don't, which silently creates a new empty volume and orphans the old one instead of erroring. See [DEPLOYMENT.md](./DEPLOYMENT.md) for the full reasoning and compose-file examples.
 

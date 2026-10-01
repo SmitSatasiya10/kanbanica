@@ -30,6 +30,27 @@ dated section, e.g.:
 
 ## [Unreleased]
 
+### Changed
+- Docker: one image now serves all three roles (`app`, `worker`, `migrate`),
+  selected by `command:` — `Dockerfile.worker` is removed and
+  `next.config.mjs` no longer uses `output: "standalone"`. The image ships the
+  real source tree with a `--prod` `node_modules`, so `pnpm worker:start`,
+  `pnpm db:migrate:prod` and the admin-recovery scripts all run inside any
+  container. This also removes the hand-maintained copy of sharp's native
+  libvips that the standalone file-tracer needed.
+- `docker-compose.yml` now **pulls the published image** instead of building
+  locally (`docker compose up -d`, no `--build`), with `IMAGE_TAG` to pin a
+  version and `APP_PORT` to move the host port. Build-from-source moved to the
+  new `docker-compose.build.yml`; `docker-compose.external-db.yml` still
+  overlays either one. Volume names are unchanged, so existing deployments
+  reattach to their data.
+
+### Fixed
+- Documented commands that could not work: `pnpm worker:start` /
+  `pnpm db:migrate:prod` were listed for an image with no `pnpm` in it, and
+  `curl localhost:3000` was documented while the compose file bound no host
+  port.
+
 ## [0.1.0] - 2026-08-17
 
 ### Added

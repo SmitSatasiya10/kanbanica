@@ -1,3 +1,29 @@
+# Kanbanica, the normal way to run it. PostgreSQL included, nothing built locally.
+#
+#   curl -O https://raw.githubusercontent.com/stack256org/kanbanica/main/docker-compose.yml
+#   curl -o .env https://raw.githubusercontent.com/stack256org/kanbanica/main/.env.example
+#   # edit .env: set APP_SECRET (openssl rand -hex 32), APP_URL, POSTGRES_PASSWORD
+#   docker compose up -d
+#
+# This pulls a published multi-arch image instead of running a full Next.js
+# build on your server, which on a small machine is slow and memory-hungry.
+#
+# One image fills all three roles below — the only difference is `command:`.
+#
+# The other two files are alternatives, never used alongside this one:
+#   docker-compose.external-db.yml   your own PostgreSQL instead of the bundled one
+#   docker-compose.build.yml         build from source, for changing the code
+#
+# Pin a version in production, because `latest` moves on every release:
+#   IMAGE_TAG=0.1.0 docker compose up -d
+#
+# Port 3000 already taken? Use APP_PORT, never PORT. See the app service below.
+#
+# Your data lives in two named volumes. They survive `down`, `pull` and `up -d`;
+# only `down -v` destroys them. See the bottom of this file.
+
+x-image: &image ${KANBANICA_IMAGE:-ghcr.io/stack256org/kanbanica}:${IMAGE_TAG:-latest}
+
 services:
   postgres:
     image: postgres:16
@@ -6,6 +32,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-kanbanica}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kanbanica}
       POSTGRES_DB: ${POSTGRES_DB:-kanbanica}
+      # Pinned explicitly rather than left to the image default, which changed
+      # in Postgres 18 — so a future base-image bump can't silently start
+      # writing to a different path inside the same volume.
+      PGDATA: /var/lib/postgresql/data
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -14,26 +44,45 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-shot: applies pending migrations, then exits. app and worker wait for it
+  # to complete successfully, so a fresh `up -d` always lands on a current schema.
+  #
+  # `db:migrate:prod` runs scripts/migrate.ts (drizzle-orm's migrator), not
+  # `drizzle-kit migrate` — drizzle-kit is a devDependency and absent from this
+  # image. The script also waits for the database with backoff and takes a
+  # pg_advisory_lock, so two concurrent deploys can't apply the same migration
+  # twice.
   migrate:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    command: ["/app/node_modules/.bin/tsx", "scripts/migrate.ts"]
-    environment:
-      DATABASE_URL: ${DATABASE_URL}
+    image: *image
+    pull_policy: always
+    command: pnpm db:migrate:prod
+    env_file: .env
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
 
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: *image
+    pull_policy: always
+    command: pnpm start
     restart: unless-stopped
     env_file: .env
-    expose:
-      - "3000"
+    # Behind a reverse proxy on the same Docker network (Traefik, Caddy, Dokploy,
+    # Coolify)? Replace this block with `expose: ["3000"]` so nothing binds a
+    # host port.
+    #
+    # APP_PORT, not PORT: `env_file: .env` passes every variable into the
+    # container and `next start` itself consumes PORT — so naming this PORT
+    # would make one variable silently move the container's internal bind port
+    # too, breaking both this mapping and the image's HEALTHCHECK (which probes
+    # :3000).
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    # Belt and braces: pin the internal port so a stray PORT in .env can never
+    # move it. `environment:` wins over `env_file:`.
+    environment:
+      PORT: 3000
     volumes:
       - uploads:/app/uploads
     depends_on:
@@ -41,25 +90,31 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+    # The image ships its own HEALTHCHECK (GET /api/health) — no need to
+    # redeclare it here.
 
+  # Background jobs: email delivery, notification digests, due-date reminders,
+  # sprint auto-close. Magic-link emails are enqueued through pg-boss, so
+  # without this service running nobody can sign in by email.
+  #
+  # Run exactly one. Jobs are durable in Postgres, but two workers can
+  # double-process — do not `up --scale worker=N`.
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    command: ["/app/node_modules/.bin/tsx", "scripts/worker.ts"]
+    image: *image
+    pull_policy: always
+    command: pnpm worker:start
     restart: unless-stopped
     env_file: .env
+    volumes:
+      - uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # Not the app server, so the image's HTTP healthcheck does not apply.
+    healthcheck:
+      disable: true
 
 volumes:
   # Pinned to literal names (not just "pgdata"/"uploads") on purpose: Compose
@@ -72,6 +127,9 @@ volumes:
   # redeployed container mounted a fresh, empty volume instead of the one
   # holding the file. Pinning guarantees every deploy reattaches to the same
   # volume.
+  #
+  # All three compose files use these same names, so you can switch between
+  # them without losing data. Do not rename them in an existing deployment.
   pgdata:
     name: kanbanica-kanbanica-72jxmn_pgdata
   uploads:

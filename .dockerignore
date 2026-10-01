@@ -12,3 +12,22 @@ coverage
 .kanbanica-postgres
 .krova-postgres
 tsconfig.tsbuildinfo
+
+# Local attachment storage. Never bake a developer's uploads into the image —
+# in production this path is a mounted volume anyway.
+uploads
+
+# Repo furniture with no role in the build. The runtime image does `COPY . .`
+# so that the worker (tsx) and scripts/migrate.ts have real source to run,
+# which means anything left here ships to everyone who pulls the image.
+#
+# docs/ and the root *.md files deliberately stay IN the context: Tailwind
+# scans the project for class names and app/globals.css negates docs/ with
+# `@source not "../docs/**"`, so removing them would change what the CSS build
+# sees for no real gain.
+Dockerfile
+docker-compose*.yml
+.dockerignore
+.github
+.claude
+tasks
