@@ -1,7 +1,7 @@
 "use server";
 
 import { createId } from "@paralleldrive/cuid2";
-import { and, asc, eq, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, ne } from "drizzle-orm";
 import { headers } from "next/headers";
 import { user, workspace, workspaceMember } from "@/db/schema";
 import { INVITE_LINK_ROLES, type InviteLinkRole } from "@/db/schema/workspace";
@@ -421,6 +421,35 @@ export async function joinViaLink(
     return joinBlocked;
   }
 
+  // Notify owners/admins — only here, after the new membership row exists, so
+  // opens, failures and already-member retries (returned above) never notify.
+  // Reuses "invite_accepted" (links to Members settings in the inbox).
+  const admins = await db
+    .select({ userId: workspaceMember.userId })
+    .from(workspaceMember)
+    .where(
+      and(
+        eq(workspaceMember.workspaceId, ws.id),
+        eq(workspaceMember.status, "ACTIVE"),
+        inArray(workspaceMember.role, ["OWNER", "ADMIN"])
+      )
+    );
+  const [wsRow] = await db
+    .select({ name: workspace.name })
+    .from(workspace)
+    .where(eq(workspace.id, ws.id))
+    .limit(1);
+  const joinerName = session.user.name?.trim() || session.user.email || "Someone";
+  createNotifications({
+    workspaceId: ws.id,
+    actorId: session.user.id,
+    recipientIds: admins.flatMap((a) => (a.userId ? [a.userId] : [])),
+    triggerType: "invite_accepted",
+    entityType: "WORKSPACE",
+    entityId: ws.id,
+    title: `${joinerName} joined ${wsRow?.name ?? "your workspace"} via your invite link`,
+  });
+
   void refreshWorkspace(ws.id);
   return { workspaceId: ws.id };
 }
@@ -506,7 +535,7 @@ export async function inviteMember(data: {
     .then((r) => r[0]);
 
   const inviteUrl = `${env.APP_URL}/invite/${inviteToken}`;
-  const inviterName = session.user.name ?? session.user.email ?? "Someone";
+  const inviterName = session.user.name?.trim() || session.user.email || "Someone";
   const workspaceName = ws?.name ?? "a workspace";
 
   // Dev convenience only — never log invite tokens/URLs in production.
@@ -636,7 +665,7 @@ export async function resendInvite(data: {
       .then((r) => r[0]);
 
     const inviteUrl = `${env.APP_URL}/invite/${newToken}`;
-    const inviterName = session.user.name ?? session.user.email ?? "Someone";
+    const inviterName = session.user.name?.trim() || session.user.email || "Someone";
     const workspaceName = ws?.name ?? "a workspace";
 
     // Re-deliver the in-app invite (if the invitee has an account) pointing at the
@@ -683,17 +712,89 @@ export async function resendInvite(data: {
   return { ok: true };
 }
 
-export async function acceptInvite(
-  token: string
-): Promise<{ workspaceId: string } | { error: string }> {
+export type InviteErrorCode =
+  | "auth_required"
+  | "invalid"
+  | "expired"
+  | "used"
+  | "wrong_user"
+  | "rate_limited";
+
+export type InviteState =
+  | { state: "pending"; workspaceName: string | null }
+  | { state: "accepted"; workspaceId: string }
+  | { state: "error"; code: InviteErrorCode; error: string };
+
+const INVITE_ERRORS: Record<InviteErrorCode, string> = {
+  auth_required: "Please sign in to view this invitation.",
+  invalid: "This invitation link is invalid.",
+  expired: "This invitation has expired. Ask an admin to send a new one.",
+  used: "This invitation is no longer available.",
+  wrong_user: "This invitation was sent to a different email address.",
+  rate_limited: "Too many attempts. Please try again shortly.",
+};
+
+function inviteError(code: InviteErrorCode): InviteState {
+  return { state: "error", code, error: INVITE_ERRORS[code] };
+}
+
+/**
+ * Read-only resolution of an invite link for the current user. Never mutates;
+ * an invite already accepted by THIS user resolves to "accepted" (not an
+ * error), so reopening/refreshing the link lands them in the workspace.
+ */
+export async function getInviteState(token: string): Promise<InviteState> {
   const session = await requireSession();
   if (!session) {
-    return { error: "Unauthorized" };
+    return inviteError("auth_required");
+  }
+  const [invite] = await db
+    .select()
+    .from(workspaceMember)
+    .where(eq(workspaceMember.inviteToken, token));
+  if (!invite) {
+    return inviteError("invalid");
+  }
+  if (invite.status === "ACTIVE") {
+    return invite.userId === session.user.id
+      ? { state: "accepted", workspaceId: invite.workspaceId }
+      : inviteError("used");
+  }
+  if (invite.status !== "INVITED") {
+    return inviteError("used");
+  }
+  if (invite.inviteExpiresAt && invite.inviteExpiresAt < new Date()) {
+    return inviteError("expired");
+  }
+  if (invite.email && invite.email !== session.user.email?.toLowerCase()) {
+    return inviteError("wrong_user");
+  }
+  const [ws] = await db
+    .select({ name: workspace.name })
+    .from(workspace)
+    .where(eq(workspace.id, invite.workspaceId))
+    .limit(1);
+  return { state: "pending", workspaceName: ws?.name ?? null };
+}
+
+export async function acceptInvite(
+  token: string
+): Promise<
+  | { workspaceId: string }
+  | { error: string; code: InviteErrorCode }
+> {
+  const fail = (code: InviteErrorCode) => ({
+    error: INVITE_ERRORS[code],
+    code,
+  });
+  const session = await requireSession();
+  if (!session) {
+    return fail("auth_required");
   }
 
   // Rate limit token attempts per user to slow invite-token guessing.
   if (!rateLimit(`invite-accept:${session.user.id}`, 20, 60_000).ok) {
-    return { error: "Too many attempts. Please try again shortly." };
+    return fail("rate_limited");
   }
 
   const [invite] = await db
@@ -702,7 +803,7 @@ export async function acceptInvite(
     .where(eq(workspaceMember.inviteToken, token));
 
   if (!invite) {
-    return { error: "Invalid or expired invitation" };
+    return fail("invalid");
   }
 
   // Idempotent short-circuit: this user already accepted this exact invite —
@@ -712,15 +813,15 @@ export async function acceptInvite(
     return { workspaceId: invite.workspaceId };
   }
   if (invite.status !== "INVITED") {
-    return { error: "This invitation has already been used" };
+    return fail("used");
   }
   if (invite.inviteExpiresAt && invite.inviteExpiresAt < new Date()) {
-    return { error: "This invitation has expired" };
+    return fail("expired");
   }
 
   // Check email matches if invite was for a specific address
   if (invite.email && invite.email !== session.user.email?.toLowerCase()) {
-    return { error: "This invitation was sent to a different email address" };
+    return fail("wrong_user");
   }
 
   // Atomic transition — the status="INVITED" guard closes the SELECT/UPDATE
@@ -753,13 +854,13 @@ export async function acceptInvite(
     if (current?.status === "ACTIVE" && current.userId === session.user.id) {
       return { workspaceId: current.workspaceId };
     }
-    return { error: "This invitation has already been used" };
+    return fail("used");
   }
 
   // Notify the inviter that their invitation was accepted — only on the
   // winning transition, never on an idempotent short-circuit above.
   if (invite.invitedBy) {
-    const accepterName = session.user.name ?? session.user.email ?? "Someone";
+    const accepterName = session.user.name?.trim() || session.user.email || "Someone";
     const [wsRow] = await db
       .select({ name: workspace.name })
       .from(workspace)
@@ -886,7 +987,7 @@ export async function activatePendingInvites(): Promise<{ activated: number }> {
 
     // Notify the inviter that their invitation was accepted (mirrors acceptInvite).
     if (invite.invitedBy) {
-      const accepterName = session.user.name ?? session.user.email ?? "Someone";
+      const accepterName = session.user.name?.trim() || session.user.email || "Someone";
       const [wsRow] = await db
         .select({ name: workspace.name })
         .from(workspace)
@@ -1046,7 +1147,7 @@ export async function removeMember(data: {
 
   // Notify the removed member so they understand why they lost access.
   if (target[0].userId) {
-    const actorName = session.user.name ?? session.user.email ?? "Someone";
+    const actorName = session.user.name?.trim() || session.user.email || "Someone";
     const [wsRow] = await db
       .select({ name: workspace.name })
       .from(workspace)
