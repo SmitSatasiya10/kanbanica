@@ -4,6 +4,7 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   CheckIcon,
+  DownloadSimpleIcon,
   SpinnerGapIcon,
   UploadSimpleIcon,
 } from "@phosphor-icons/react";
@@ -11,6 +12,7 @@ import { useRouter } from "next/navigation";
 import * as React from "react";
 import { toast } from "sonner";
 import { getCustomFieldDefinitions } from "@/app/actions/custom-field";
+import { CsvColumnPicker } from "@/components/import-export/csv-column-picker";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,13 +25,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Table,
   TableBody,
   TableCell,
@@ -40,14 +35,20 @@ import {
 import {
   autoDetectMapping,
   buildMappableFields,
-  IGNORE_TARGET,
   type MappableField,
 } from "@/lib/import-export/column-mapping";
 import { parseCsv } from "@/lib/import-export/csv";
+import { downloadCsvTemplate } from "@/lib/import-export/csv-template";
+import { formatRowIssues } from "@/lib/import-export/format-issues";
 import {
   MAX_IMPORT_FILE_SIZE,
   MAX_IMPORT_ROWS,
 } from "@/lib/import-export/limits";
+import {
+  assignColumn,
+  columnForField,
+  isColumnTakenByOtherField,
+} from "@/lib/import-export/mapping-view";
 import { cn } from "@/lib/utils";
 
 type Step = "upload" | "map" | "preview" | "result";
@@ -214,10 +215,6 @@ export function ImportWizardDialog({
     setStep("map");
   }
 
-  function setFieldMapping(header: string, target: string) {
-    setMapping((prev) => ({ ...prev, [header]: target }));
-  }
-
   async function runValidate() {
     setValidating(true);
     try {
@@ -280,9 +277,6 @@ export function ImportWizardDialog({
     remainingCapacity !== null && checkedRows.size > remainingCapacity;
 
   const titleMapped = Object.values(mapping).includes("title");
-  const usedTargets = new Set(
-    Object.values(mapping).filter((t) => t !== IGNORE_TARGET)
-  );
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -320,6 +314,22 @@ export function ImportWizardDialog({
                 type="file"
               />
             </label>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-base-content/60">
+                Not sure about the format? Start from a template with every
+                supported column.
+              </p>
+              <Button
+                className="w-full sm:w-auto"
+                onClick={() => downloadCsvTemplate()}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <DownloadSimpleIcon className="size-4" />
+                Download CSV Template
+              </Button>
+            </div>
             {uploadError && (
               <Alert variant="destructive">
                 <AlertDescription>{uploadError}</AlertDescription>
@@ -332,53 +342,38 @@ export function ImportWizardDialog({
           <div className="space-y-4">
             <p className="text-sm text-base-content/60">
               {fileName} — {dataRows.length} row
-              {dataRows.length === 1 ? "" : "s"}. Map each column to a Kanbanica
-              field, or leave it unmapped to ignore it.
+              {dataRows.length === 1 ? "" : "s"}. Choose which CSV column feeds
+              each Kanbanica field, or leave it as Do not import.
             </p>
             <div className="max-h-96 overflow-y-auto rounded-xl border border-base-300">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>CSV Column</TableHead>
-                    <TableHead>Kanbanica Field</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {headers.map((header) => (
-                    <TableRow key={header}>
-                      <TableCell className="font-medium">{header}</TableCell>
-                      <TableCell>
-                        <Select
-                          onValueChange={(v) => setFieldMapping(header, v)}
-                          value={mapping[header] ?? IGNORE_TARGET}
-                        >
-                          <SelectTrigger className="w-full">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value={IGNORE_TARGET}>
-                              Do not import
-                            </SelectItem>
-                            {mappableFields.map((f) => (
-                              <SelectItem
-                                disabled={
-                                  usedTargets.has(f.key) &&
-                                  mapping[header] !== f.key
-                                }
-                                key={f.key}
-                                value={f.key}
-                              >
-                                {f.label}
-                                {f.required ? " *" : ""}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <div className="hidden grid-cols-2 gap-4 border-b border-base-300 px-4 py-2 text-xs font-semibold tracking-wider text-base-content/60 uppercase sm:grid">
+                <span>Kanbanica Field</span>
+                <span>CSV Column</span>
+              </div>
+              <ul className="divide-y divide-base-300">
+                {mappableFields.map((f) => (
+                  <li
+                    className="grid grid-cols-1 items-center gap-1.5 px-4 py-2.5 sm:grid-cols-2 sm:gap-4"
+                    key={f.key}
+                  >
+                    <span className="min-w-0 truncate text-sm font-medium">
+                      {f.label}
+                      {f.required ? " *" : ""}
+                    </span>
+                    <CsvColumnPicker
+                      ariaLabel={`CSV column for ${f.label}`}
+                      headers={headers}
+                      isDisabled={(h) =>
+                        isColumnTakenByOtherField(mapping, h, f.key)
+                      }
+                      onChange={(h) =>
+                        setMapping((prev) => assignColumn(prev, f.key, h))
+                      }
+                      value={columnForField(mapping, f.key)}
+                    />
+                  </li>
+                ))}
+              </ul>
             </div>
             {!titleMapped && (
               <Alert variant="destructive">
@@ -414,71 +409,139 @@ export function ImportWizardDialog({
                 </AlertDescription>
               </Alert>
             )}
-            <Alert>
-              <AlertTitle>Import Preview</AlertTitle>
-              <AlertDescription>
-                {validation.summary.valid} ready · {validation.summary.warning}{" "}
-                need attention · {validation.summary.invalid} invalid
-              </AlertDescription>
-            </Alert>
-            <div className="max-h-80 overflow-y-auto rounded-xl border border-base-300">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead />
-                    <TableHead>Row</TableHead>
-                    <TableHead>Title</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Details</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {validation.rows.map((r) => (
-                    <TableRow key={r.rowIndex}>
-                      <TableCell>
-                        <Checkbox
-                          checked={checkedRows.has(r.rowIndex)}
-                          disabled={
-                            r.status === "invalid" || r.status === "skipped"
-                          }
-                          onCheckedChange={(checked) =>
-                            setCheckedRows((prev) => {
-                              const next = new Set(prev);
-                              if (checked) {
-                                next.add(r.rowIndex);
-                              } else {
-                                next.delete(r.rowIndex);
-                              }
-                              return next;
-                            })
-                          }
-                        />
-                      </TableCell>
-                      <TableCell>{r.rowIndex}</TableCell>
-                      <TableCell className="max-w-48 truncate">
-                        {r.title || "—"}
-                      </TableCell>
-                      <TableCell>
-                        <Badge
-                          variant={
-                            r.status === "invalid"
-                              ? "destructive"
-                              : r.status === "warning"
-                                ? "secondary"
-                                : "default"
-                          }
-                        >
-                          {r.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="max-w-96 whitespace-normal text-xs text-base-content/70">
-                        {[...r.errors, ...r.warnings].join("; ") || "—"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-xl border border-success/30 bg-success/10 px-2 py-2">
+                <div className="text-lg font-semibold text-success">
+                  {validation.summary.valid}
+                </div>
+                <div className="text-xs text-base-content/70">Ready</div>
+              </div>
+              <div className="rounded-xl border border-warning/30 bg-warning/10 px-2 py-2">
+                <div className="text-lg font-semibold text-warning">
+                  {validation.summary.warning}
+                </div>
+                <div className="text-xs text-base-content/70">
+                  Need attention
+                </div>
+              </div>
+              <div className="rounded-xl border border-error/30 bg-error/10 px-2 py-2">
+                <div className="text-lg font-semibold text-error">
+                  {validation.summary.invalid}
+                </div>
+                <div className="text-xs text-base-content/70">Invalid</div>
+              </div>
             </div>
+            {validation.summary.invalid > 0 && (
+              <Alert variant="destructive">
+                <AlertDescription>
+                  {validation.summary.invalid} row
+                  {validation.summary.invalid === 1 ? " has" : "s have"} errors
+                  and cannot be imported.
+                </AlertDescription>
+              </Alert>
+            )}
+            <ul className="max-h-96 space-y-2 overflow-y-auto rounded-xl border border-base-300 p-2">
+              {validation.rows.map((r) => {
+                const issues = formatRowIssues(r.errors, r.warnings);
+                const label =
+                  r.status === "invalid"
+                    ? "Invalid"
+                    : r.status === "warning"
+                      ? "Needs attention"
+                      : r.status === "skipped"
+                        ? "Skipped"
+                        : "Valid";
+                return (
+                  <li
+                    className={cn(
+                      "rounded-xl border p-3",
+                      r.status === "invalid"
+                        ? "border-error/30"
+                        : r.status === "warning"
+                          ? "border-warning/30"
+                          : "border-base-300"
+                    )}
+                    key={r.rowIndex}
+                  >
+                    <div className="flex items-center gap-3">
+                      <Checkbox
+                        aria-label={`Select row ${r.rowIndex}`}
+                        checked={checkedRows.has(r.rowIndex)}
+                        disabled={
+                          r.status === "invalid" || r.status === "skipped"
+                        }
+                        onCheckedChange={(checked) =>
+                          setCheckedRows((prev) => {
+                            const next = new Set(prev);
+                            if (checked) {
+                              next.add(r.rowIndex);
+                            } else {
+                              next.delete(r.rowIndex);
+                            }
+                            return next;
+                          })
+                        }
+                      />
+                      <span className="text-xs text-base-content/60">
+                        Row {r.rowIndex}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                        {r.title || "—"}
+                      </span>
+                      <Badge
+                        variant={
+                          r.status === "invalid"
+                            ? "destructive"
+                            : r.status === "warning"
+                              ? "outline"
+                              : "default"
+                        }
+                      >
+                        {label}
+                      </Badge>
+                    </div>
+                    {issues.length > 0 && (
+                      <ul className="mt-2 space-y-1.5">
+                        {issues.map((issue) => (
+                          <li
+                            className={cn(
+                              "rounded-md border-l-2 bg-base-200/40 px-3 py-1.5 text-xs break-words",
+                              issue.severity === "error" && "border-error",
+                              issue.severity === "warning" && "border-warning",
+                              issue.severity === "info" && "border-info"
+                            )}
+                            key={`${issue.label}-${issue.message}`}
+                          >
+                            <div className="font-semibold text-base-content">
+                              {issue.label}
+                            </div>
+                            <div
+                              className={cn(
+                                issue.severity === "error" && "text-error",
+                                issue.severity === "warning" && "text-warning",
+                                issue.severity === "info" && "text-info"
+                              )}
+                            >
+                              {issue.severity === "error"
+                                ? "✕"
+                                : issue.severity === "warning"
+                                  ? "⚠"
+                                  : "ℹ"}{" "}
+                              {issue.message}
+                            </div>
+                            {issue.hint && (
+                              <div className="text-base-content/60">
+                                {issue.hint}
+                              </div>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
           </div>
         )}
 
