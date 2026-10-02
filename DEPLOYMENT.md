@@ -17,6 +17,8 @@ The stack runs as three long-lived services plus a one-shot migration step:
 
 `migrate`, `app` and `worker` are **the same image** with a different `command:` — see [Why one image](#why-one-image). You never build or pull a second one.
 
+> **Deploying on a platform that runs the image once** (Dokploy, Coolify, CapRover, a bare `docker run`)? You don't have to split it up. Given **no** command, the image migrates and then runs the web server *and* the worker in that one container — see [Platforms that aren't Docker Compose](#platforms-that-arent-docker-compose).
+
 Three compose files, and you use exactly one as the base:
 
 | File | When |
@@ -468,10 +470,30 @@ What it is *not* is the whole dev environment. Runtime `node_modules` is a `--pr
 
 ### Platforms that aren't Docker Compose
 
-**Dokploy, Coolify, CapRover, Portainer, Kubernetes, Swarm, ECS.** Deploy the published image three times with the commands in the table at the top of this guide. Two things to get right:
+**Dokploy, Coolify, CapRover, Portainer, Kubernetes, Swarm, ECS.** You have two options.
+
+#### Option A — one container (simplest)
+
+Point the platform at the image, set the env vars, and **leave the command blank**. With no command, the image's entrypoint applies pending migrations and then runs the web server *and* exactly one worker inside that container. Nothing else to configure — this is the path a Dokploy "Docker (registry image)" deployment takes by default.
+
+It supervises both processes: if either one dies the container exits, so your platform's restart policy brings the pair back together. That is deliberate — a container still answering `/api/health` with a dead worker would look healthy while every queued email and reminder piled up unsent.
+
+Two environment variables tune it, and neither is normally needed:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `KANBANICA_ROLE` | `all` | `all` = migrate + web + worker. Or pick one role: `app`, `worker`, `migrate`. Lets you split the roles on a platform where setting env vars is easier than overriding the command. |
+| `KANBANICA_RUN_MIGRATIONS` | `true` for `all`/`migrate`, else `false` | Set `false` if your database user may not run DDL and you apply migrations out-of-band. |
+
+An explicit command always wins: anything you *do* set is run verbatim, which is exactly how the three Compose services select their role.
+
+#### Option B — three services (recommended for production)
+
+Deploy the published image three times with the commands in the table at the top of this guide. It costs more setup but the roles restart independently, the worker can't take the web server down with it, and you can give each one its own resource limits. Two things to get right:
 
 - **The `migrate` step must finish before `app` and `worker` start.** Compose expresses this with `depends_on: {migrate: {condition: service_completed_successfully}}`. If your platform has no equivalent, deploying this repo's `docker-compose.yml` *as a Compose stack* (Dokploy and Coolify both support that) is the easiest way to get the ordering for free. Otherwise run the migration yourself on each upgrade: `docker compose run --rm migrate`, or `pnpm db:migrate:prod` in any container of the new image, before the new app serves traffic.
-- **The app alone is not a deployment.** Magic-link emails are enqueued through pg-boss, so with no worker running nobody can sign in by email.
+- **Don't skip the worker.** Magic-link emails are enqueued through pg-boss, so with no worker running nobody can sign in by email. (Option A exists precisely because this was easy to miss.)
+- **Still run exactly one worker** — see [Operational notes](#9-operational-notes--limits).
 
 On the default `STORAGE_DRIVER=local`, mount a persistent volume at `/app/uploads` (S3/R2 need none), and check that your platform keeps volume names stable across redeploys — some don't (observed with Dokploy), which silently creates a new empty volume and orphans the old one instead of erroring. That's why the volumes in `docker-compose.yml` are pinned to literal names.
 
@@ -487,7 +509,10 @@ On the default `STORAGE_DRIVER=local`, mount a persistent volume at `/app/upload
 | `migrate` exits 1: database unreachable after 10 attempts | The external DB isn't reachable from the container. Check firewall/VPC rules, and use `host.docker.internal` (not `localhost`) if it runs on the Docker host. |
 | Using an external DB but a `postgres` container still starts | You forgot `-f docker-compose.external-db.yml`. Both `-f` flags are required, in that order. |
 | `pnpm db:migrate` in a container: "drizzle-kit: not found" | Expected — it's a devDependency and the image is a `--prod` install. Use `pnpm db:migrate:prod`, which runs `scripts/migrate.ts`. |
-| Deployed only the app image on Dokploy/Coolify: can't log in, schema missing | A single container isn't a deployment. You need the `migrate` run and a `worker` — see [Platforms that aren't Docker Compose](#platforms-that-arent-docker-compose). |
+| Single container on Dokploy/Coolify: no worker running, can't log in, schema missing | You're on a build predating the role-dispatching entrypoint, or you set an explicit command (e.g. `pnpm start`), which overrides it. Pull latest and clear the command field — with none set, one container now migrates and runs web + worker. See [Platforms that aren't Docker Compose](#platforms-that-arent-docker-compose). |
+| Single container logs `unknown KANBANICA_ROLE` and exits 64 | Typo in `KANBANICA_ROLE`. Valid values: `all` (default), `app`, `worker`, `migrate`. |
+| Single container is reachable but the platform reports it unhealthy | You set `PORT` to something other than 3000. The image's `HEALTHCHECK` probes `:3000` inside the container. Leave `PORT` alone and map the port externally instead. |
+| Single container restarts in a loop right after `[worker] pg-boss started` | In the combined role, either process dying takes the container down by design. Read the logs *above* the restart — it's the worker or the web server failing, not the entrypoint. |
 | `depends_on` error mentioning `required` | Docker Compose is older than 2.20. Upgrade, or run `docker compose up -d app worker`. |
 | Users never receive the magic-link email | SMTP misconfigured or DNS (SPF/DKIM) failing. Check `docker compose logs worker`. |
 | New password signups can't log in ("Email not verified") | Expected once SMTP is set — they must click the verification link. See [Authentication](#authentication). |

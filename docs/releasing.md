@@ -105,9 +105,11 @@ version. Building from source moved to `docker-compose.build.yml`.
 That makes every release a real artifact people deploy, not just a tag, so two things
 matter more than they used to:
 
-- **One image covers `app`, `worker` and `migrate`**, differing only in `command:`. There
-  is no second image to publish or keep in lockstep — see the Dockerfile header for why
-  it ships real source instead of a standalone bundle.
+- **One image covers `app`, `worker` and `migrate`**, differing only in `command:` — and
+  as of 0.3.0, with *no* command it runs migrate + app + worker together in one container
+  (`KANBANICA_ROLE`, default `all`). There is no second image to publish or keep in
+  lockstep — see the Dockerfile header for why it ships real source instead of a
+  standalone bundle.
 - **`latest` moves on every release.** The README's generated block tells self-hosters to
   pin, but anyone who didn't will be upgraded by a plain `docker compose pull`. Breaking
   deployment changes belong in an `### Upgrade notes` block in the changelog section,

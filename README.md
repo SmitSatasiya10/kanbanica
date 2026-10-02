@@ -175,11 +175,15 @@ Full production guide, HTTPS/reverse proxy setup, and backup/restore: **[DEPLOYM
 
 Kanbanica ships **one** image — any platform that runs a container can run it, not just Docker Compose.
 
-**Coolify, Dokploy, CapRover, Portainer, Kubernetes, Docker Swarm, ECS.** Run three services from that one image, changing only the command:
+**Coolify, Dokploy, CapRover, Portainer, Kubernetes, Docker Swarm, ECS.**
+
+Deploying the image **once** — the usual "paste a registry image URL" flow — works on its own: leave the command blank and the container applies pending migrations, then runs the web server *and* one background worker, supervised together. `KANBANICA_ROLE` (`all` by default, or `app` / `worker` / `migrate`) overrides that if you want one role per container without editing commands.
+
+For production we still recommend splitting it into three services from that one image, changing only the command, so the roles restart independently:
 
 | Service | Command | Notes |
 |---------|---------|-------|
-| app | `pnpm start` *(default image `CMD`)* | Serves on port 3000. Probe `GET /api/health`. |
+| app | `pnpm start` | Serves on port 3000. Probe `GET /api/health`. |
 | worker | `pnpm worker:start` | No web port. Background jobs and outgoing email — including magic-link sign-in — don't run without it. Run exactly one. |
 | migrate | `pnpm db:migrate:prod` | Run once to completion before `app`/`worker` start on each deploy. Safe to run concurrently: it takes a `pg_advisory_lock`. |
 
@@ -193,10 +197,10 @@ Point your platform at the published image directly rather than building from so
 Pin a version in production, because `latest` moves with every release:
 
 ```bash
-docker pull ghcr.io/stack256org/kanbanica:0.2.0
+docker pull ghcr.io/stack256org/kanbanica:0.3.0
 ```
 
-Also tagged `0`, `0.2`, and `latest` — every tag covers both Intel and ARM.
+Also tagged `0`, `0.3`, and `latest` — every tag covers both Intel and ARM.
 <!-- END GENERATED: image-tag -->
 
 **Railway, Render, Fly.io, or anything else building from source.**

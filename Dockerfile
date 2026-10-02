@@ -4,9 +4,16 @@
 # The same image runs the web app, the background worker, and the one-shot
 # migration job; compose picks the role with `command:`
 #
-#   pnpm start            → the Next.js server          (default CMD)
+#   pnpm start            → the Next.js server
 #   pnpm worker:start     → the pg-boss worker
 #   pnpm db:migrate:prod  → apply migrations, then exit
+#
+# With NO command, scripts/docker-entrypoint.sh picks the role from
+# KANBANICA_ROLE instead, defaulting to "all": migrate, then web server AND
+# worker supervised in the one container. That is for platforms that deploy a
+# registry image once and have no `command:` to set (Dokploy, Coolify, CapRover,
+# a bare `docker run`) — without it such a deployment gets the web server alone
+# and no worker, so no email is ever sent and magic-link sign-in never arrives.
 #
 # That is why this image ships the real source tree and a real node_modules
 # instead of Next's `output: "standalone"` bundle. The worker runs TypeScript
@@ -104,6 +111,10 @@ COPY --from=build --chown=kanbanica:kanbanica /app/.next ./.next
 # Corepack writes its "last known good" metadata back into COREPACK_HOME on use.
 RUN chown -R kanbanica:kanbanica /opt/corepack
 
+# The repo tracks shell scripts as mode 644 (no exec bit to inherit), so set it
+# here rather than relying on the checkout.
+RUN chmod +x /app/scripts/docker-entrypoint.sh
+
 # Local-storage uploads live here; mount a volume to persist across redeploys.
 # Created (and owned) in the image so a *fresh* named volume mounted over it
 # inherits that ownership and the non-root user can write to it.
@@ -116,11 +127,20 @@ EXPOSE 3000
 # orchestrators can rely on this instead of declaring their own probe.
 # node:22-bookworm-slim ships neither wget nor curl, so the probe uses Node's
 # built-in fetch rather than pulling in an extra apt package.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+#
+# start-period covers the slowest legitimate boot: in the default "all" role the
+# web server starts only AFTER migrations have been applied, and the migration
+# step waits for the database with backoff.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-# Overridden per-service in docker-compose (app / worker / migrate).
-CMD ["pnpm", "start"]
+# Every explicit command (the `command:` of each docker-compose service, or
+# `docker run <image> bash`) is exec'd verbatim by the entrypoint. "kanbanica" is
+# a sentinel meaning "no command given — read KANBANICA_ROLE, default all". It
+# must be a real value, not an empty CMD, or the base image's inherited
+# `CMD ["node"]` would take its place.
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
+CMD ["kanbanica"]
 
 # OCI metadata. This is what renders on the GitHub Packages page, and what
 # links the package back to this repository.
