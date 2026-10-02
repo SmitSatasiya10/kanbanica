@@ -1,5 +1,5 @@
 import { createId } from "@paralleldrive/cuid2";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { getCustomFieldDefinitions } from "@/app/actions/custom-field";
 import { spaceRecipientUserIds } from "@/app/actions/space";
 import { findOrCreateTagsByNames } from "@/app/actions/task-tag";
@@ -12,7 +12,6 @@ import {
   taskTag,
   taskWatcher,
   user,
-  workspace,
   workspaceMember,
 } from "@/db/schema";
 import { writeActivityLogBulk } from "@/lib/activity-log";
@@ -20,6 +19,12 @@ import { db } from "@/lib/db";
 import { createBulkNotifications } from "@/lib/notifications/create-bulk-notifications";
 import { requireEditAccess } from "@/lib/permissions";
 import { refreshWorkspace } from "@/lib/realtime/refresh";
+import {
+  getWorkspaceCapacity,
+  requireTaskCapacity,
+  TASK_LIMIT_CODE,
+  taskLimitReachedMessage,
+} from "@/lib/workspace-limits";
 import { plainTextToTiptapDoc } from "./tiptap-text";
 import {
   type ExistingTaskRef,
@@ -159,7 +164,9 @@ export async function bulkImportTasks(
   }: { workspaceId: string; spaceId: string; listId: string },
   mapping: Record<string, string>,
   rows: { rowIndex: number; row: Record<string, string> }[]
-): Promise<BulkImportResult | { error: string }> {
+): Promise<
+  BulkImportResult | { error: string; code?: typeof TASK_LIMIT_CODE }
+> {
   const permErr = await requireEditAccess(userId, workspaceId, spaceId);
   if (permErr) {
     return permErr;
@@ -219,6 +226,17 @@ export async function bulkImportTasks(
     return { successCount: 0, createdTaskIds: [], failedRows };
   }
 
+  // Early, non-locking capacity check so a batch that cannot fit is rejected
+  // before tags are created. The authoritative (locked) check is
+  // requireTaskCapacity inside the insert transaction below.
+  const capacity = await getWorkspaceCapacity(workspaceId);
+  if (capacity.limit !== null && finalCandidates.length > capacity.remaining!) {
+    return {
+      error: taskLimitReachedMessage(capacity.limit),
+      code: TASK_LIMIT_CODE,
+    };
+  }
+
   // Resolve/create every unique tag name across the whole batch in one pass.
   const allTagNames = finalCandidates.flatMap((r) => r.data!.tagNames);
   const tagIdByNameLower = await findOrCreateTagsByNames(
@@ -230,13 +248,6 @@ export async function bulkImportTasks(
   const rowIdByIndex = new Map(
     finalCandidates.map((r) => [r.rowIndex, createId()])
   );
-
-  const [{ taskSeq }] = await db
-    .update(workspace)
-    .set({ taskSeq: sql`${workspace.taskSeq} + ${finalCandidates.length}` })
-    .where(eq(workspace.id, workspaceId))
-    .returning({ taskSeq: workspace.taskSeq });
-  const seqBase = taskSeq - finalCandidates.length;
 
   const createdTaskIds: string[] = [];
   const taskValues: (typeof task.$inferInsert)[] = [];
@@ -251,10 +262,9 @@ export async function bulkImportTasks(
     data: { title: string };
   }[] = [];
 
-  finalCandidates.forEach((r, i) => {
+  for (const r of finalCandidates) {
     const data = r.data as MappedTaskData;
     const taskId = rowIdByIndex.get(r.rowIndex)!;
-    const seqNumber = seqBase + i + 1;
     const parentTaskId =
       data.parentRef?.type === "existing"
         ? data.parentRef.taskId
@@ -265,7 +275,9 @@ export async function bulkImportTasks(
     createdTaskIds.push(taskId);
     taskValues.push({
       id: taskId,
-      seqNumber,
+      // Real seqNumber/orderIndex are assigned inside the transaction, once the
+      // capacity gate has reserved the seq block.
+      seqNumber: 0,
       workspaceId,
       spaceId,
       listId,
@@ -279,7 +291,7 @@ export async function bulkImportTasks(
       reporterId: userId,
       dueDateStart: data.dueDateStart,
       dueDateEnd: data.dueDateEnd,
-      orderIndex: seqNumber * 1000,
+      orderIndex: 0,
     });
 
     const watcherIds = [...new Set([userId, ...data.assigneeIds])];
@@ -313,10 +325,22 @@ export async function bulkImportTasks(
         data: { title: data.title },
       });
     }
-  });
+  }
 
-  await db.transaction(async (tx) => {
-    await tx.insert(task).values(taskValues);
+  const inserted = await db.transaction(async (tx) => {
+    // Authoritative all-or-nothing capacity gate (locks the workspace row) +
+    // seq reservation. Nothing is inserted if the batch does not fit.
+    const gate = await requireTaskCapacity(tx, workspaceId, taskValues.length);
+    if ("error" in gate) {
+      return gate;
+    }
+    await tx.insert(task).values(
+      taskValues.map((v, i) => ({
+        ...v,
+        seqNumber: gate.seqBase + i + 1,
+        orderIndex: (gate.seqBase + i + 1) * 1000,
+      }))
+    );
     if (watcherValues.length > 0) {
       await tx.insert(taskWatcher).values(watcherValues).onConflictDoNothing();
     }
@@ -332,7 +356,11 @@ export async function bulkImportTasks(
     if (fieldValues.length > 0) {
       await tx.insert(customFieldValue).values(fieldValues);
     }
+    return null;
   });
+  if (inserted) {
+    return inserted;
+  }
 
   await writeActivityLogBulk(activityEntries);
 

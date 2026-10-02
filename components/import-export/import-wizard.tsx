@@ -55,12 +55,15 @@ type Step = "upload" | "map" | "preview" | "result";
 interface RowValidation {
   errors: string[];
   rowIndex: number;
-  status: "valid" | "warning" | "invalid";
+  status: "valid" | "warning" | "invalid" | "skipped";
   title: string;
   warnings: string[];
 }
 
 interface ValidateResponse {
+  // Informational; the authoritative check runs on confirm. limit/remaining are
+  // null when the workspace has no task limit.
+  capacity: { limit: number | null; used: number; remaining: number | null };
   missingRequired: string[];
   rows: RowValidation[];
   summary: { total: number; valid: number; warning: number; invalid: number };
@@ -235,7 +238,9 @@ export function ImportWizardDialog({
       setValidation(data);
       setCheckedRows(
         new Set(
-          data.rows.filter((r) => r.status !== "invalid").map((r) => r.rowIndex)
+          data.rows
+            .filter((r) => r.status !== "invalid" && r.status !== "skipped")
+            .map((r) => r.rowIndex)
         )
       );
       setStep("preview");
@@ -269,6 +274,10 @@ export function ImportWizardDialog({
       setImporting(false);
     }
   }
+
+  const remainingCapacity = validation?.capacity.remaining ?? null;
+  const overCapacity =
+    remainingCapacity !== null && checkedRows.size > remainingCapacity;
 
   const titleMapped = Object.values(mapping).includes("title");
   const usedTargets = new Set(
@@ -392,6 +401,19 @@ export function ImportWizardDialog({
                 </AlertDescription>
               </Alert>
             )}
+            {validation.capacity.limit !== null && (
+              <Alert variant={overCapacity ? "warning" : "default"}>
+                <AlertTitle>Workspace task limit</AlertTitle>
+                <AlertDescription>
+                  {validation.capacity.used.toLocaleString("en-US")} /{" "}
+                  {validation.capacity.limit.toLocaleString("en-US")} tasks used
+                  — room for {(remainingCapacity ?? 0).toLocaleString("en-US")}{" "}
+                  more.
+                  {overCapacity &&
+                    ` You selected ${checkedRows.size.toLocaleString("en-US")} rows; deselect at least ${(checkedRows.size - (remainingCapacity ?? 0)).toLocaleString("en-US")} to import, or ask an admin to raise the limit. Imports are all-or-nothing.`}
+                </AlertDescription>
+              </Alert>
+            )}
             <Alert>
               <AlertTitle>Import Preview</AlertTitle>
               <AlertDescription>
@@ -416,7 +438,9 @@ export function ImportWizardDialog({
                       <TableCell>
                         <Checkbox
                           checked={checkedRows.has(r.rowIndex)}
-                          disabled={r.status === "invalid"}
+                          disabled={
+                            r.status === "invalid" || r.status === "skipped"
+                          }
                           onCheckedChange={(checked) =>
                             setCheckedRows((prev) => {
                               const next = new Set(prev);
@@ -542,14 +566,15 @@ export function ImportWizardDialog({
                 <ArrowLeftIcon className="size-4" /> Back
               </Button>
               <Button
-                disabled={checkedRows.size === 0 || importing}
+                disabled={checkedRows.size === 0 || importing || overCapacity}
                 onClick={runImport}
               >
                 {importing && (
                   <SpinnerGapIcon className="size-4 animate-spin" />
                 )}
-                Import {checkedRows.size} Task
-                {checkedRows.size === 1 ? "" : "s"}
+                {overCapacity
+                  ? `Only ${(remainingCapacity ?? 0).toLocaleString("en-US")} fit`
+                  : `Import ${checkedRows.size} Task${checkedRows.size === 1 ? "" : "s"}`}
               </Button>
             </>
           )}

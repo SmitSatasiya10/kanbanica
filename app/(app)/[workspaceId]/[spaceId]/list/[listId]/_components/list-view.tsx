@@ -590,6 +590,7 @@ function QuickCreateRow({
         ...quickMetaCreateFields(meta),
       });
       if ("error" in res) {
+        toast.error(res.error);
         return;
       }
       // Sprint isn't a createTask field — assign it right after.

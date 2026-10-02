@@ -84,8 +84,16 @@ interface MembersManagerProps {
   actorRole: WorkspaceRole;
   appUrl: string;
   currentUserId: string;
+  inviteLinkExpiresAt: string | null;
+  inviteLinkMaxUses: number | null;
   inviteLinkRole: InviteLinkRole;
   inviteLinkToken: string | null;
+  inviteLinkUses: number;
+  /** Seat limits + usage per bucket (limit null = unlimited). Display only. */
+  memberCapacity: {
+    guests: { limit: number | null; used: number; remaining: number | null };
+    members: { limit: number | null; used: number; remaining: number | null };
+  };
   members: Member[];
   pendingInvites: PendingInvite[];
   workspaceId: string;
@@ -103,11 +111,15 @@ export function MembersManager({
   workspaceId,
   workspaceName,
   members,
+  memberCapacity,
   pendingInvites,
   currentUserId,
   actorRole,
   inviteLinkToken,
   inviteLinkRole,
+  inviteLinkExpiresAt,
+  inviteLinkMaxUses,
+  inviteLinkUses,
   appUrl,
 }: MembersManagerProps) {
   const router = useRouter();
@@ -121,6 +133,20 @@ export function MembersManager({
     "MEMBER"
   );
   const inviteEmailTrimmed = inviteEmail.trim();
+  // Display-only mirrors of the server-side member/guest limit gate.
+  const bucketFull = (cap: {
+    limit: number | null;
+    remaining: number | null;
+  }) => cap.limit !== null && (cap.remaining ?? 0) === 0;
+  const membersFull = bucketFull(memberCapacity.members);
+  const guestsFull = bucketFull(memberCapacity.guests);
+  const inviteBucketFull = inviteRole === "GUEST" ? guestsFull : membersFull;
+  const seatSummary = [
+    memberCapacity.members.limit !== null &&
+      `${memberCapacity.members.used.toLocaleString("en-US")} / ${memberCapacity.members.limit.toLocaleString("en-US")} members`,
+    memberCapacity.guests.limit !== null &&
+      `${memberCapacity.guests.used.toLocaleString("en-US")} / ${memberCapacity.guests.limit.toLocaleString("en-US")} guests`,
+  ].filter(Boolean);
   const inviteEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
     inviteEmailTrimmed
   );
@@ -187,6 +213,8 @@ export function MembersManager({
               <CardDescription>
                 {members.length} {members.length === 1 ? "person" : "people"} in
                 this workspace
+                {seatSummary.length > 0 &&
+                  ` · ${seatSummary.join(" · ")} (incl. pending invites)`}
               </CardDescription>
             </div>
             <div className="flex gap-2">
@@ -329,12 +357,22 @@ export function MembersManager({
                           <SelectItem value="GUEST">Guest</SelectItem>
                         </SelectContent>
                       </Select>
+                      {inviteBucketFull && (
+                        <p className="text-xs text-warning">
+                          This workspace has reached its{" "}
+                          {inviteRole === "GUEST" ? "guest" : "member"} limit.
+                          Raise the limit in Settings → Limits or free up a seat
+                          to invite more.
+                        </p>
+                      )}
                     </div>
                   </div>
                   <DialogFooter>
                     <Button
                       className="gap-2"
-                      disabled={pending || !inviteEmailValid}
+                      disabled={
+                        pending || !inviteEmailValid || inviteBucketFull
+                      }
                       onClick={() =>
                         run(
                           () =>
@@ -542,8 +580,17 @@ export function MembersManager({
       <InviteLinkCard
         appUrl={appUrl}
         canManage={actorRole === "OWNER" || actorRole === "ADMIN"}
+        inviteLinkExpiresAt={inviteLinkExpiresAt}
+        inviteLinkMaxUses={inviteLinkMaxUses}
         inviteLinkRole={inviteLinkRole}
         inviteLinkToken={inviteLinkToken}
+        inviteLinkUses={inviteLinkUses}
+        joinBlockedRole={
+          // The link grants one role; show a hint when that bucket is full.
+          (inviteLinkRole === "GUEST" ? guestsFull : membersFull)
+            ? inviteLinkRole
+            : null
+        }
         workspaceId={workspaceId}
       />
 

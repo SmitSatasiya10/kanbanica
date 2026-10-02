@@ -17,6 +17,7 @@ import {
   validateImportRow,
 } from "@/lib/import-export/validate-row";
 import { requireEditAccess } from "@/lib/permissions";
+import { getWorkspaceCapacity } from "@/lib/workspace-limits";
 
 interface ValidateBody {
   mapping: Record<string, string>;
@@ -134,8 +135,12 @@ export async function POST(
     invalid: counted.filter((r) => r.status === "invalid").length,
   };
 
+  // Informational only — the authoritative check is in bulkImportTasks (confirm).
+  const capacity = await getWorkspaceCapacity(spaceRow.workspaceId);
+
   return NextResponse.json({
     summary,
+    capacity,
     missingRequired,
     rows: results.map((r) => ({
       rowIndex: r.rowIndex,

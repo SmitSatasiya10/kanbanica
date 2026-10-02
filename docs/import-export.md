@@ -31,6 +31,26 @@ pg-boss) — raising this limit later means adding a `CSV_IMPORT` job that calls
 the same `bulkImportTasks()` function (`lib/import-export/bulk-import-tasks.ts`),
 not a rewrite.
 
+## Workspace task limit
+
+If the workspace has a task limit (`workspace.maxTasks`, Settings → Limits;
+`null` = unlimited), imports are subject to it. Every task row in the
+workspace counts — active, completed, **archived** and subtasks.
+
+- **Validate** (`/import/validate`) returns an informational
+  `capacity: { limit, used, remaining }` (`limit`/`remaining` are `null` when
+  unlimited). It never blocks validation.
+- **Preview** shows remaining capacity. If the number of selected rows exceeds
+  it, a warning appears and the Import button is disabled (relabelled
+  "Only N fit") until enough rows are unchecked.
+- **Confirm** (`/import/confirm`) is authoritative: `bulkImportTasks()` calls
+  `requireTaskCapacity()` inside the insert transaction (workspace row locked),
+  for the number of rows that survive row-level validation. The check is
+  **all-or-nothing** — if the batch doesn't fit, nothing is inserted and the
+  route returns **HTTP 409** (not 403) with the limit message.
+- Row-level validation failures (invalid rows) are still reported per row and
+  don't consume capacity.
+
 ## CSV format
 
 - UTF-8, comma-separated, standard RFC4180 quoting (quote a value containing
@@ -161,6 +181,7 @@ with its reason — never a bare "Import failed".
 | `Parent task "X" was not found` | No task with that title/`#seq` exists in this list or file |
 | `Cannot nest subtasks more than one level` | The referenced parent is itself a subtask |
 | `<Field>: "X" is not a valid option` | The value doesn't match any Select option's label |
+| `Workspace task limit reached (N). …` (HTTP 409) | The surviving rows don't fit in the workspace's remaining task capacity; nothing was imported |
 | `This file has X rows — imports are limited to 200 rows per file` | File exceeds the MVP row limit |
 
 ## Key files
@@ -169,6 +190,7 @@ with its reason — never a bare "Import failed".
 - `lib/import-export/column-mapping.ts` — field list + header auto-detection
 - `lib/import-export/validate-row.ts` — per-row validation (pure, reused by preview and confirm)
 - `lib/import-export/bulk-import-tasks.ts` — bulk task creation (reuses `validateCustomFieldValue`, the same permission guards, and `createTask`'s business rules, batched for efficiency)
+- `lib/workspace-limits.ts` — `requireTaskCapacity()` (the task-limit gate) and `getWorkspaceCapacity()`
 - `lib/import-export/export-tasks.ts` — authorized task export query
 - `app/api/lists/[listId]/export/route.ts`, `app/api/spaces/[spaceId]/export/route.ts` — CSV downloads
 - `app/api/lists/[listId]/import/validate/route.ts`, `.../import/confirm/route.ts` — import pipeline

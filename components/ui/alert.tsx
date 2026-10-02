@@ -9,6 +9,8 @@ const alertVariants = cva(
     variants: {
       variant: {
         default: "bg-elevated text-base-content after:bg-base-content",
+        warning:
+          "alert-warning bg-elevated text-warning after:bg-warning *:data-[slot=alert-description]:text-base-content/70 *:[svg]:text-current",
         destructive:
           "alert-error bg-elevated text-error after:bg-error *:data-[slot=alert-description]:text-error/90 *:[svg]:text-current",
       },

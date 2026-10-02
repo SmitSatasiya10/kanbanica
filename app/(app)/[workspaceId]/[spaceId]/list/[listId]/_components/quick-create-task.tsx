@@ -2,6 +2,7 @@
 
 import { PlusIcon } from "@phosphor-icons/react";
 import * as React from "react";
+import { toast } from "sonner";
 import { addTaskToSprint } from "@/app/actions/sprint";
 import { createTask } from "@/app/actions/task";
 import {
@@ -87,6 +88,13 @@ export function QuickCreateTask({
       statusId,
       ...quickMetaCreateFields(meta),
     });
+    if (res && "error" in res) {
+      // Keep the typed title/meta so nothing is lost (e.g. workspace task limit).
+      toast.error(res.error);
+      setLoading(false);
+      inputRef.current?.focus();
+      return;
+    }
     // Sprint isn't a createTask field — assign it right after, reusing the
     // existing action.
     if (res && "taskId" in res && meta.sprintId) {

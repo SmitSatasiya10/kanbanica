@@ -134,7 +134,7 @@ export function OnboardingWizard({
                 id="display-name"
                 maxLength={100}
                 onChange={(e) => setDisplayName(e.target.value)}
-                placeholder="e.g. Priya Shah"
+                placeholder="e.g. Elena Rossi"
                 required
                 value={displayName}
               />

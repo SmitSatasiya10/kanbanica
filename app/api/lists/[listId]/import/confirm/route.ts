@@ -6,6 +6,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { bulkImportTasks } from "@/lib/import-export/bulk-import-tasks";
 import { MAX_IMPORT_ROWS } from "@/lib/import-export/limits";
+import { TASK_LIMIT_CODE } from "@/lib/task-limit";
 
 interface ConfirmBody {
   mapping: Record<string, string>;
@@ -79,7 +80,10 @@ export async function POST(
     body.rows
   );
   if ("error" in result) {
-    return NextResponse.json({ error: result.error }, { status: 403 });
+    // Capacity exhaustion is a conflict with current workspace state, not a
+    // permission failure.
+    const status = result.code === TASK_LIMIT_CODE ? 409 : 403;
+    return NextResponse.json({ error: result.error }, { status });
   }
 
   return NextResponse.json(result);

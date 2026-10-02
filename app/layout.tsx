@@ -69,8 +69,15 @@ export default async function RootLayout({
             JS loads, i.e. long after first paint. That is what made dark mode
             flash white. A plain script executes during HTML parse, before the
             page below it is painted. */}
-        {/** biome-ignore lint/security/noDangerouslySetInnerHtml: static, non-user-controlled snippet that must run before first paint. */}
-        <script dangerouslySetInnerHTML={{ __html: AUTO_APPEARANCE_SCRIPT }} />
+        {/* React 19 warns when it *client*-renders a script (RSC refreshes). The
+            server HTML already holds the executable copy, so on the client we
+            emit a non-JS `type`, which React treats as an inert data block. */}
+        <script
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: static, non-user-controlled snippet that must run before first paint.
+          dangerouslySetInnerHTML={{ __html: AUTO_APPEARANCE_SCRIPT }}
+          suppressHydrationWarning
+          type={typeof window === "undefined" ? undefined : "application/json"}
+        />
         {children}
         <Toaster position="bottom-right" richColors />
       </body>

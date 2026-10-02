@@ -22,6 +22,7 @@ import {
   getAccessibleSpaceIds,
   getWorkspaceMembership,
 } from "@/lib/permissions";
+import { getWorkspaceCapacity } from "@/lib/workspace-limits";
 
 interface WorkspaceLayoutProps {
   children: React.ReactNode;
@@ -104,6 +105,10 @@ export default async function WorkspaceLayout({
   if (!ws) {
     notFound();
   }
+
+  // Limit + usage for the task-limit banner (usage is only counted when a
+  // limit is set).
+  const taskCapacity = await getWorkspaceCapacity(workspaceId);
 
   const [spaces, archivedSpaces] = await Promise.all([
     spaceIds.length > 0
@@ -359,6 +364,7 @@ export default async function WorkspaceLayout({
             canManageList: spaceCanManageMap[s.id] ?? isAdminOrOwner,
             sprints: sprintsBySpace[s.id] ?? [],
           }))}
+          taskCapacity={{ limit: taskCapacity.limit, used: taskCapacity.used }}
           user={{
             name: session.user.name ?? null,
             email: session.user.email,

@@ -165,7 +165,7 @@ You should now have:
 |------------|------------|---------|
 | `pnpm db:local` (database) | `pnpm dev` (app + worker) | <http://localhost:3000> |
 
-Create a workspace, add a project, and start making tasks. Invite teammates from **Workspace Settings → Members** (`/[workspaceId]/settings/members`, Owner/Admin only) — by email invite or a shareable invite link.
+Create a workspace, add a project, and start making tasks. Invite teammates from **Workspace Settings → Members** (`/[workspaceId]/settings/members`, Owner/Admin only) — by email invite or a shareable invite link. To cap team size, set optional member and guest limits under **Settings → Limits** (unlimited by default). The shared invite link can be given an expiry and a maximum number of uses from the same Members page.
 
 **Learn the core concepts:** [docs/workspace.md](./docs/workspace.md), [docs/space.md](./docs/space.md) (Projects), [docs/list.md](./docs/list.md), [docs/views.md](./docs/views.md) (List/Board/Calendar), and [docs/sprint.md](./docs/sprint.md) cover the main building blocks. The full list is in [CLAUDE.md](./CLAUDE.md)'s "Feature Docs" table.
 

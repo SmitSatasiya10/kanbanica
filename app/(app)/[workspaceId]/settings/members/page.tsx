@@ -9,6 +9,7 @@ import { INVITE_LINK_ROLES, type InviteLinkRole } from "@/db/schema/workspace";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
+import { getWorkspaceMemberCapacity } from "@/lib/workspace-limits";
 
 interface MembersPageProps {
   params: Promise<{ workspaceId: string }>;
@@ -30,6 +31,9 @@ export default async function MembersPage({ params }: MembersPageProps) {
       name: workspace.name,
       inviteLinkToken: workspace.inviteLinkToken,
       inviteLinkRole: workspace.inviteLinkRole,
+      inviteLinkExpiresAt: workspace.inviteLinkExpiresAt,
+      inviteLinkMaxUses: workspace.inviteLinkMaxUses,
+      inviteLinkUses: workspace.inviteLinkUses,
     })
     .from(workspace)
     .where(eq(workspace.id, workspaceId));
@@ -99,17 +103,23 @@ export default async function MembersPage({ params }: MembersPageProps) {
       expiresAt: m.inviteExpiresAt?.toISOString() ?? null,
     }));
 
+  const memberCapacity = await getWorkspaceMemberCapacity(workspaceId);
+
   return (
     <MembersManager
       actorRole={actor.role}
       appUrl={env.APP_URL}
       currentUserId={session.user.id}
+      inviteLinkExpiresAt={ws.inviteLinkExpiresAt?.toISOString() ?? null}
+      inviteLinkMaxUses={ws.inviteLinkMaxUses}
       inviteLinkRole={
         INVITE_LINK_ROLES.includes(ws.inviteLinkRole as InviteLinkRole)
           ? (ws.inviteLinkRole as InviteLinkRole)
           : "MEMBER"
       }
       inviteLinkToken={ws.inviteLinkToken ?? null}
+      inviteLinkUses={ws.inviteLinkUses}
+      memberCapacity={memberCapacity}
       members={members}
       pendingInvites={pendingInvites}
       workspaceId={workspaceId}

@@ -15,12 +15,12 @@ import {
   taskAttachment,
   taskDependency,
   taskTag,
-  workspace,
 } from "@/db/schema";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getWorkspaceMembership } from "@/lib/permissions";
 import { refreshWorkspace } from "@/lib/realtime/refresh";
+import { requireTaskCapacity } from "@/lib/workspace-limits";
 
 // ── Permission helpers ─────────────────────────────────────────────────────
 
@@ -351,7 +351,8 @@ export async function duplicateList(
   }
 
   const [source] = await db.select().from(list).where(eq(list.id, listId));
-  if (!source) {
+  // The list must live in the space the caller was authorised against.
+  if (!source || source.spaceId !== spaceId) {
     return { error: "List not found" };
   }
 
@@ -404,7 +405,23 @@ export async function duplicateList(
   const orderIndex = await getNextListOrderIndex(spaceId);
   const newListId = createId();
 
-  await db.transaction(async (tx) => {
+  const duplicated = await db.transaction(async (tx) => {
+    // Workspace task-limit gate for every task the copy will create
+    // (all-or-nothing), then a contiguous block of seq numbers. Runs before any
+    // insert so a rejected copy leaves no half-created list behind.
+    let seqBase = 0;
+    if (copiedTasks.length > 0) {
+      const capacity = await requireTaskCapacity(
+        tx,
+        workspaceId,
+        copiedTasks.length
+      );
+      if ("error" in capacity) {
+        return capacity;
+      }
+      seqBase = capacity.seqBase;
+    }
+
     await tx.insert(list).values({
       id: newListId,
       spaceId,
@@ -435,16 +452,8 @@ export async function duplicateList(
     }
 
     if (copiedTasks.length === 0) {
-      return;
+      return null;
     }
-
-    // Reserve a contiguous block of seq numbers in one atomic bump.
-    const [{ taskSeq }] = await tx
-      .update(workspace)
-      .set({ taskSeq: sql`${workspace.taskSeq} + ${copiedTasks.length}` })
-      .where(eq(workspace.id, workspaceId))
-      .returning({ taskSeq: workspace.taskSeq });
-    const seqBase = taskSeq - copiedTasks.length;
 
     const taskMap = new Map<string, string>();
     for (const t of copiedTasks) {
@@ -568,7 +577,11 @@ export async function duplicateList(
         );
       }
     }
+    return null;
   });
+  if (duplicated) {
+    return duplicated;
+  }
 
   void refreshWorkspace(workspaceId);
   return { listId: newListId };
