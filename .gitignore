@@ -61,3 +61,6 @@ krova-db-*
 .brainer/index.db-*
 .brainer/models/
 .brainer/hooks/
+
+# Local implementation plans (kept out of the repo)
+/docs/plans/

@@ -205,10 +205,10 @@ const testimonials = [
     rating: 5,
   },
   {
-    name: "Priya Nair",
+    name: "Lena Fischer",
     role: "Founder",
     company: "Loopback",
-    initials: "PN",
+    initials: "LF",
     avatar:
       "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&h=150&q=80",
     body: "My Tasks view is something I didn't know I needed. Seeing every task assigned to me across every project in one place — with a due date grouping — is brilliant.",

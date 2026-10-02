@@ -69,3 +69,33 @@ export async function writeActivityLog(
     // Activity logging is fire-and-forget — never block the main action
   }
 }
+
+// Batch variant of writeActivityLog — one insert for N entries instead of N
+// round trips. Used by the CSV importer (lib/import-export/bulk-import-tasks.ts)
+// to log one `task_created` entry per created task without looping the
+// single-row insert above. Same fire-and-forget contract: never throws.
+export async function writeActivityLogBulk(
+  entries: {
+    taskId: string;
+    userId: string;
+    eventType: ActivityEventType;
+    meta?: ActivityMeta;
+  }[]
+): Promise<void> {
+  if (entries.length === 0) {
+    return;
+  }
+  try {
+    await db.insert(activityLog).values(
+      entries.map((e) => ({
+        id: createId(),
+        taskId: e.taskId,
+        userId: e.userId,
+        eventType: e.eventType,
+        meta: e.meta ?? {},
+      }))
+    );
+  } catch {
+    // Activity logging is fire-and-forget — never block the main action
+  }
+}

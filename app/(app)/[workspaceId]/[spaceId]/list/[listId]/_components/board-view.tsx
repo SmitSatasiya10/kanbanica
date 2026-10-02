@@ -34,15 +34,18 @@ import {
   CircleIcon,
   CopyIcon,
   DotsThreeIcon,
+  DownloadSimpleIcon,
   FlagIcon,
   FunnelIcon,
   HashIcon,
+  KeyboardIcon,
   LinkIcon,
   ListPlusIcon,
   PlusIcon,
   SlidersHorizontalIcon,
   TextAaIcon,
   TrashIcon,
+  UploadSimpleIcon,
   UserIcon,
   XIcon,
 } from "@phosphor-icons/react";
@@ -72,8 +75,17 @@ import {
 } from "@/components/filters/facet-filter";
 import { FilterBuilder } from "@/components/filters/filter-builder";
 import { FilterChip } from "@/components/filters/filter-chip";
+import {
+  ExportMenuRow,
+  triggerExportDownload,
+} from "@/components/import-export/export-button";
+import {
+  ImportMenuRow,
+  ImportWizardDialog,
+} from "@/components/import-export/import-wizard";
 import { useRealtimePause } from "@/components/realtime/realtime-provider";
 import { CreateTaskModal } from "@/components/task/create-task-modal";
+import { KeyboardShortcutsDialog } from "@/components/task/keyboard-shortcuts-dialog";
 import {
   TaskDependencyBadge,
   type TaskDependencyIndicator,
@@ -83,6 +95,14 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -106,6 +126,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
   TooltipContent,
@@ -202,6 +223,8 @@ interface SubtaskRow {
 }
 
 interface BoardViewProps {
+  archivedLoading?: boolean;
+  archivedTasks?: { id: string; title: string; seqNumber: number }[];
   canEdit?: boolean;
   canManage?: boolean;
   customFields?: CustomFieldRow[];
@@ -214,6 +237,9 @@ interface BoardViewProps {
     description?: string | null;
   };
   members?: BoardMember[];
+  onArchivedChanged?: () => Promise<void>;
+  onToggleArchived?: () => void;
+  showArchived?: boolean;
   space: {
     id: string;
     name: string;
@@ -1700,6 +1726,11 @@ export function BoardView({
   canEdit,
   canManage,
   isAdmin,
+  archivedLoading,
+  archivedTasks,
+  onArchivedChanged,
+  onToggleArchived,
+  showArchived,
 }: BoardViewProps) {
   const router = useRouter();
   // Re-pull the server-rendered board after a card quick-action. The actions
@@ -1788,6 +1819,8 @@ export function BoardView({
   // Mobile-only "Filters" bottom sheet (see the mobile toolbar block below) —
   // desktop keeps every filter inline, so this only matters under `md:`.
   const [mobileFiltersOpen, setMobileFiltersOpen] = React.useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
+  const [importOpen, setImportOpen] = React.useState(false);
 
   // Local filter state (mirrors list-view pattern)
   const [statusFilter, setStatusFilter] = React.useState<string[]>([]);
@@ -1983,10 +2016,20 @@ export function BoardView({
   // Previous/Next Task nav context: current columns left-to-right, each
   // column's cards top-to-bottom — the same order the board renders. Handed
   // to Task Detail so Prev/Next walks it without a DB query.
-  const visibleOrderedTaskIds = React.useMemo(
-    () => statuses.flatMap((s) => (tasksByStatus[s.id] ?? []).map((t) => t.id)),
-    [statuses, tasksByStatus]
-  );
+  const visibleOrderedTaskIds = React.useMemo(() => {
+    const ids: string[] = [];
+    if (showArchived && archivedTasks) {
+      for (const t of archivedTasks) {
+        ids.push(t.id);
+      }
+    }
+    for (const s of statuses) {
+      for (const t of tasksByStatus[s.id] ?? []) {
+        ids.push(t.id);
+      }
+    }
+    return ids;
+  }, [showArchived, archivedTasks, statuses, tasksByStatus]);
 
   // Split mouse/touch instead of one PointerSensor: touch needs
   // `touch-action: none` to beat native scroll, which would turn a plain
@@ -2224,7 +2267,10 @@ export function BoardView({
           <div className="mx-1 h-5 w-px shrink-0 bg-base-300" />
 
           <div className="flex items-center gap-2 flex-wrap">
-            {/* Sort */}
+            {/* Sort — no "Group By" control here: the status columns are
+                already the grouping (List view's Group By is an alternative
+                to its flat list), so adding a second grouping mechanism on
+                top of the columns would conflict rather than add parity. */}
             <Popover onOpenChange={setSortMenuOpen} open={sortMenuOpen}>
               <PopoverTrigger asChild>
                 <button
@@ -2353,6 +2399,52 @@ export function BoardView({
                 <ManageFieldsIcon className="size-4" />
               </button>
             )}
+
+            {/* Secondary actions — same "More" menu pattern as List view
+                (Export/Import/Archived/Shortcuts), so the toolbar doesn't
+                grow a button per action. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  aria-label="More actions"
+                  className="flex items-center justify-center size-8 rounded-lg border border-base-300 text-base-content/60 hover:bg-base-200/30 hover:text-base-content transition-colors cursor-pointer"
+                  title="More actions"
+                  type="button"
+                >
+                  <DotsThreeIcon className="size-4" weight="bold" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuItem
+                  onClick={() =>
+                    triggerExportDownload({ kind: "list", listId: list.id })
+                  }
+                >
+                  <DownloadSimpleIcon className="size-3.5" />
+                  Export Tasks (CSV)
+                </DropdownMenuItem>
+                {canManage && (
+                  <DropdownMenuItem onClick={() => setImportOpen(true)}>
+                    <UploadSimpleIcon className="size-3.5" />
+                    Import Tasks (CSV)
+                  </DropdownMenuItem>
+                )}
+                {onToggleArchived && (
+                  <DropdownMenuCheckboxItem
+                    checked={showArchived}
+                    onCheckedChange={() => onToggleArchived()}
+                  >
+                    <ArchiveIcon className="size-3.5" />
+                    Archived Tasks
+                  </DropdownMenuCheckboxItem>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setShortcutsOpen(true)}>
+                  <KeyboardIcon className="size-3.5" />
+                  Keyboard Shortcuts
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
@@ -2504,6 +2596,19 @@ export function BoardView({
                   </div>
                 </div>
 
+                {onToggleArchived && (
+                  <>
+                    <div className="h-px bg-base-300" />
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium">Show archived</span>
+                      <Switch
+                        checked={!!showArchived}
+                        onCheckedChange={() => onToggleArchived()}
+                      />
+                    </div>
+                  </>
+                )}
+
                 {filterFields.length > 0 && (
                   <>
                     <div className="h-px bg-base-300" />
@@ -2586,6 +2691,24 @@ export function BoardView({
                   </button>
                 </>
               )}
+              <div className="my-1 h-px bg-base-300" />
+              <ExportMenuRow scope={{ kind: "list", listId: list.id }} />
+              {canManage && (
+                <ImportMenuRow
+                  listId={list.id}
+                  spaceId={space.id}
+                  workspaceId={workspaceId}
+                />
+              )}
+              <div className="my-1 h-px bg-base-300" />
+              <button
+                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-base-200"
+                onClick={() => setShortcutsOpen(true)}
+                type="button"
+              >
+                <KeyboardIcon className="size-4 text-base-content/60" />
+                Keyboard Shortcuts
+              </button>
             </PopoverContent>
           </Popover>
         </div>
@@ -2640,6 +2763,70 @@ export function BoardView({
           </div>
         )}
       </div>
+
+      {showArchived && (
+        <div className="mb-6 overflow-hidden rounded-xl border border-base-300 bg-base-200/20">
+          <div className="flex items-center gap-2 select-none border-b border-base-300 bg-base-200/50 px-4 py-2 text-xs font-bold uppercase tracking-wide text-base-content/60">
+            <ArchiveIcon className="size-4" />
+            Archived ({archivedTasks?.length ?? 0})
+          </div>
+          {(!archivedTasks || archivedTasks.length === 0) && (
+            <div className="px-4 py-6 text-center text-xs italic text-base-content/60">
+              {archivedLoading
+                ? "Loading archived tasks…"
+                : "No archived tasks"}
+            </div>
+          )}
+          <div className="divide-y divide-border">
+            {archivedTasks?.map((t) => (
+              // biome-ignore lint/a11y/useSemanticElements: wraps a nested interactive "Unarchive" button, so it can't literally be a <button>; kept keyboard-accessible via role+tabIndex+onKeyDown
+              <div
+                className="group flex cursor-pointer items-center gap-3 px-4 py-2 transition-colors hover:bg-base-200/30"
+                key={t.id}
+                onClick={() => {
+                  setTaskNavContext({ taskIds: visibleOrderedTaskIds });
+                  router.push(`/${workspaceId}/task/${t.id}?from=list`);
+                }}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) {
+                    return;
+                  }
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setTaskNavContext({ taskIds: visibleOrderedTaskIds });
+                    router.push(`/${workspaceId}/task/${t.id}?from=list`);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+              >
+                <span className="shrink-0 select-none font-mono text-2xs text-base-content/60">
+                  #{t.seqNumber}
+                </span>
+                <span className="flex-1 truncate text-[13px] font-medium text-base-content/60 line-through">
+                  {t.title}
+                </span>
+                <button
+                  className="invisible flex shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-lg border border-base-300 bg-base-100 px-2.5 py-1 text-2xs font-semibold text-base-content/60 transition-colors group-hover:visible hover:text-base-content"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    await unarchiveTask(workspaceId, space.id, list.id, t.id);
+                    await onArchivedChanged?.();
+                    toastWithUndo("Task unarchived", async () => {
+                      await archiveTask(workspaceId, space.id, list.id, t.id);
+                      await onArchivedChanged?.();
+                    });
+                  }}
+                  type="button"
+                >
+                  <ArchiveIcon className="size-3.5 text-base-content/60" />
+                  Unarchive
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <DndContext
         collisionDetection={closestCenter}
@@ -2789,6 +2976,21 @@ export function BoardView({
           </DialogContent>
         </Dialog>
       )}
+
+      <KeyboardShortcutsDialog
+        onOpenChange={setShortcutsOpen}
+        open={shortcutsOpen}
+      />
+
+      {/* Opened from the desktop "More" menu above; mobile opens the same
+          dialog via ImportMenuRow's own internal state instead. */}
+      <ImportWizardDialog
+        listId={list.id}
+        onOpenChange={setImportOpen}
+        open={importOpen}
+        spaceId={space.id}
+        workspaceId={workspaceId}
+      />
     </TooltipProvider>
   );
 }

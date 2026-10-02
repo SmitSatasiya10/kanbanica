@@ -176,6 +176,27 @@
       "when": 1785995426526,
       "tag": "0024_quick_sunspot",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1790914365786,
+      "tag": "0025_workspace_max_tasks",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1790919483488,
+      "tag": "0026_workspace_member_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1790920515421,
+      "tag": "0027_workspace_invite_link_controls",
+      "breakpoints": true
     }
   ]
 }

@@ -21,7 +21,24 @@ export const workspace = pgTable("workspace", {
   logoEmoji: text("logo_emoji"),
   inviteLinkToken: text("invite_link_token").unique(),
   inviteLinkRole: workspaceRoleEnum("invite_link_role").notNull().default("MEMBER"),
+  // Shared invite-link controls. NULL expiry / NULL max uses = no limit (the
+  // default, so existing links behave as before). `inviteLinkUses` counts
+  // successful joins through the current link; it resets when the link is
+  // regenerated. Enforced in `joinViaLink` under the workspace row lock.
+  inviteLinkExpiresAt: timestamp("invite_link_expires_at", {
+    withTimezone: true,
+  }),
+  inviteLinkMaxUses: integer("invite_link_max_uses"),
+  inviteLinkUses: integer("invite_link_uses").notNull().default(0),
   taskSeq: integer("task_seq").notNull().default(0),
+  // Max tasks (every task row: active, completed, archived, subtasks) the
+  // workspace may hold. NULL = unlimited. Enforced by `requireTaskCapacity`.
+  maxTasks: integer("max_tasks"),
+  // Max people in the workspace. Members = OWNER/ADMIN/MEMBER, guests = GUEST;
+  // ACTIVE rows plus unexpired pending invites count. NULL = unlimited.
+  // Enforced by `requireMemberCapacity`.
+  maxMembers: integer("max_members"),
+  maxGuests: integer("max_guests"),
   status: workspaceStatusEnum("status").notNull().default("ACTIVE"),
   // Accent color only — workspace-wide branding, admin-controlled. Light/dark/
   // auto is a personal preference, not workspace state — see `user.appearanceMode`.

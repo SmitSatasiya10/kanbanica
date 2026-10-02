@@ -10,10 +10,32 @@ import { db } from "@/lib/db";
 import { enqueueEmail } from "@/lib/email";
 import { workspaceInviteTemplate } from "@/lib/email/templates/workspace-invite";
 import { env } from "@/lib/env";
+import {
+  expiryFromDays,
+  INVITE_LINK_EXPIRY_PRESETS,
+  isValidExpiryDays,
+  isValidInviteLinkMaxUses,
+  MAX_INVITE_LINK_USES,
+} from "@/lib/invite-link";
+import { consumeInviteLinkUse } from "@/lib/invite-link-server";
+import {
+  isValidGuestLimit,
+  isValidMemberLimit,
+  MAX_MEMBER_LIMIT,
+  MIN_GUEST_LIMIT,
+  MIN_MEMBER_LIMIT,
+  memberBucket,
+} from "@/lib/member-limit";
 import { createNotifications } from "@/lib/notifications/create-notification";
 import { getWorkspaceMembership } from "@/lib/permissions";
 import { rateLimit } from "@/lib/rate-limit";
 import { refreshWorkspace } from "@/lib/realtime/refresh";
+import {
+  isValidTaskLimit,
+  MAX_TASK_LIMIT,
+  MIN_TASK_LIMIT,
+} from "@/lib/task-limit";
+import { requireMemberCapacity } from "@/lib/workspace-limits";
 
 /** "ADMIN" → "Admin" for user-facing notification titles. */
 function roleLabel(role: string): string {
@@ -92,6 +114,84 @@ export async function updateWorkspace(data: {
   return { ok: true };
 }
 
+// ── Task limit ─────────────────────────────────────────────────────────────
+
+// maxTasks: null = unlimited, otherwise an integer in [1, 10,000,000]. Lowering
+// the limit below current usage is allowed: existing tasks are never touched,
+// creation just stays blocked until usage drops below the limit.
+export async function updateWorkspaceTaskLimit(data: {
+  workspaceId: string;
+  maxTasks: number | null;
+}): Promise<{ ok: true } | { error: string }> {
+  const session = await requireSession();
+  if (!session) {
+    return { error: "Unauthorized" };
+  }
+
+  const admin = await requireAdmin(session.user.id, data.workspaceId);
+  if (!admin) {
+    return { error: "Only admins can change the task limit" };
+  }
+
+  if (data.maxTasks !== null && !isValidTaskLimit(data.maxTasks)) {
+    return {
+      error: `Task limit must be a whole number between ${MIN_TASK_LIMIT} and ${MAX_TASK_LIMIT.toLocaleString("en-US")}, or unlimited`,
+    };
+  }
+
+  await db
+    .update(workspace)
+    .set({ maxTasks: data.maxTasks, updatedAt: new Date() })
+    .where(eq(workspace.id, data.workspaceId));
+
+  void refreshWorkspace(data.workspaceId);
+  return { ok: true };
+}
+
+// ── Member / guest limits ──────────────────────────────────────────────────
+
+// maxMembers (OWNER/ADMIN/MEMBER) and maxGuests (GUEST): null = unlimited.
+// Lowering below current usage is allowed — nobody is removed; new invites and
+// joins stay blocked until usage drops.
+export async function updateWorkspaceMemberLimits(data: {
+  workspaceId: string;
+  maxMembers: number | null;
+  maxGuests: number | null;
+}): Promise<{ ok: true } | { error: string }> {
+  const session = await requireSession();
+  if (!session) {
+    return { error: "Unauthorized" };
+  }
+
+  const admin = await requireAdmin(session.user.id, data.workspaceId);
+  if (!admin) {
+    return { error: "Only admins can change member limits" };
+  }
+
+  if (data.maxMembers !== null && !isValidMemberLimit(data.maxMembers)) {
+    return {
+      error: `Member limit must be a whole number between ${MIN_MEMBER_LIMIT} and ${MAX_MEMBER_LIMIT.toLocaleString("en-US")}, or unlimited`,
+    };
+  }
+  if (data.maxGuests !== null && !isValidGuestLimit(data.maxGuests)) {
+    return {
+      error: `Guest limit must be a whole number between ${MIN_GUEST_LIMIT} and ${MAX_MEMBER_LIMIT.toLocaleString("en-US")}, or unlimited`,
+    };
+  }
+
+  await db
+    .update(workspace)
+    .set({
+      maxMembers: data.maxMembers,
+      maxGuests: data.maxGuests,
+      updatedAt: new Date(),
+    })
+    .where(eq(workspace.id, data.workspaceId));
+
+  void refreshWorkspace(data.workspaceId);
+  return { ok: true };
+}
+
 // ── Invite link ────────────────────────────────────────────────────────────
 
 export async function regenerateInviteLink(
@@ -106,11 +206,19 @@ export async function regenerateInviteLink(
     return { error: "Only owners and admins can manage the invite link" };
   }
 
+  // A new link is a clean slate: no expiry, unlimited uses, use count reset.
   await db
     .update(workspace)
-    .set({ inviteLinkToken: createId(), updatedAt: new Date() })
+    .set({
+      inviteLinkToken: createId(),
+      inviteLinkExpiresAt: null,
+      inviteLinkMaxUses: null,
+      inviteLinkUses: 0,
+      updatedAt: new Date(),
+    })
     .where(eq(workspace.id, workspaceId));
 
+  void refreshWorkspace(workspaceId);
   return { ok: true };
 }
 
@@ -131,6 +239,71 @@ export async function disableInviteLink(
     .set({ inviteLinkToken: null, updatedAt: new Date() })
     .where(eq(workspace.id, workspaceId));
 
+  void refreshWorkspace(workspaceId);
+  return { ok: true };
+}
+
+/**
+ * Set the shared invite link's expiry and/or max uses. Owners/Admins only.
+ * `expiresInDays`: a preset (1/7/30/90) sets `now + N days`, `null` clears the
+ * expiry, "keep" leaves it untouched. `maxUses`: null = unlimited, else
+ * 1…10,000. Never touches the use count; lowering max uses below the current
+ * count simply exhausts the link.
+ */
+export async function updateInviteLinkSettings(data: {
+  workspaceId: string;
+  expiresInDays: number | null | "keep";
+  maxUses: number | null;
+}): Promise<{ ok: true } | { error: string }> {
+  const session = await requireSession();
+  if (!session) {
+    return { error: "Unauthorized" };
+  }
+  const admin = await requireAdmin(session.user.id, data.workspaceId);
+  if (!admin) {
+    return { error: "Only owners and admins can manage the invite link" };
+  }
+
+  if (
+    data.expiresInDays !== null &&
+    data.expiresInDays !== "keep" &&
+    !isValidExpiryDays(data.expiresInDays)
+  ) {
+    return {
+      error: `Expiry must be one of ${INVITE_LINK_EXPIRY_PRESETS.join(", ")} days, or never`,
+    };
+  }
+  if (data.maxUses !== null && !isValidInviteLinkMaxUses(data.maxUses)) {
+    return {
+      error: `Max uses must be a whole number between 1 and ${MAX_INVITE_LINK_USES.toLocaleString("en-US")}, or unlimited`,
+    };
+  }
+
+  const [ws] = await db
+    .select({ token: workspace.inviteLinkToken })
+    .from(workspace)
+    .where(eq(workspace.id, data.workspaceId));
+  if (!ws?.token) {
+    return { error: "Enable the invite link first" };
+  }
+
+  await db
+    .update(workspace)
+    .set({
+      ...(data.expiresInDays === "keep"
+        ? {}
+        : {
+            inviteLinkExpiresAt:
+              data.expiresInDays === null
+                ? null
+                : expiryFromDays(data.expiresInDays),
+          }),
+      inviteLinkMaxUses: data.maxUses,
+      updatedAt: new Date(),
+    })
+    .where(eq(workspace.id, data.workspaceId));
+
+  void refreshWorkspace(data.workspaceId);
   return { ok: true };
 }
 
@@ -218,17 +391,35 @@ export async function joinViaLink(
     : "MEMBER";
 
   const now = new Date();
-  await db.insert(workspaceMember).values({
-    id: createId(),
-    workspaceId: ws.id,
-    userId: session.user.id,
-    email: session.user.email?.toLowerCase() ?? null,
-    role,
-    status: "ACTIVE",
-    joinedAt: now,
-    createdAt: now,
-    updatedAt: now,
+  // Member/guest limit gate (locks the workspace row) + insert, atomically.
+  const joinBlocked = await db.transaction(async (tx) => {
+    const capacity = await requireMemberCapacity(tx, ws.id, memberBucket(role));
+    if (capacity) {
+      return capacity;
+    }
+    // Validate expiry / max uses under the lock and consume one use. Runs
+    // after the capacity gate (which writes nothing), so a full workspace never
+    // burns a use.
+    const linkError = await consumeInviteLinkUse(tx, ws.id, token);
+    if (linkError) {
+      return linkError;
+    }
+    await tx.insert(workspaceMember).values({
+      id: createId(),
+      workspaceId: ws.id,
+      userId: session.user.id,
+      email: session.user.email?.toLowerCase() ?? null,
+      role,
+      status: "ACTIVE",
+      joinedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return null;
   });
+  if (joinBlocked) {
+    return joinBlocked;
+  }
 
   void refreshWorkspace(ws.id);
   return { workspaceId: ws.id };
@@ -260,34 +451,53 @@ export async function inviteMember(data: {
     return { error: "Email is required" };
   }
 
-  // Don't duplicate active or pending invite
-  const existing = await db
-    .select({ id: workspaceMember.id })
-    .from(workspaceMember)
-    .where(
-      and(
-        eq(workspaceMember.workspaceId, data.workspaceId),
-        eq(workspaceMember.email, email)
-      )
-    );
-  if (existing.length > 0) {
-    return { error: "This email is already a member or has a pending invite" };
-  }
-
   const inviteToken = createId();
 
-  await db.insert(workspaceMember).values({
-    id: createId(),
-    workspaceId: data.workspaceId,
-    email,
-    role: data.role,
-    status: "INVITED",
-    invitedBy: session.user.id,
-    inviteToken,
-    inviteExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-    createdAt: new Date(),
-    updatedAt: new Date(),
+  // Member/guest limit gate (locks the workspace row), duplicate check and
+  // insert in one transaction. Email/notification go out after commit.
+  const inviteError = await db.transaction(async (tx) => {
+    const capacity = await requireMemberCapacity(
+      tx,
+      data.workspaceId,
+      memberBucket(data.role)
+    );
+    if (capacity) {
+      return capacity;
+    }
+
+    // Don't duplicate active or pending invite
+    const existing = await tx
+      .select({ id: workspaceMember.id })
+      .from(workspaceMember)
+      .where(
+        and(
+          eq(workspaceMember.workspaceId, data.workspaceId),
+          eq(workspaceMember.email, email)
+        )
+      );
+    if (existing.length > 0) {
+      return {
+        error: "This email is already a member or has a pending invite",
+      };
+    }
+
+    await tx.insert(workspaceMember).values({
+      id: createId(),
+      workspaceId: data.workspaceId,
+      email,
+      role: data.role,
+      status: "INVITED",
+      invitedBy: session.user.id,
+      inviteToken,
+      inviteExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return null;
   });
+  if (inviteError) {
+    return inviteError;
+  }
 
   const ws = await db
     .select({ name: workspace.name })
@@ -359,20 +569,64 @@ export async function resendInvite(data: {
 
   const newToken = createId();
 
-  const [member] = await db
-    .update(workspaceMember)
-    .set({
-      inviteToken: newToken,
-      inviteExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      updatedAt: new Date(),
+  const [current] = await db
+    .select({
+      role: workspaceMember.role,
+      status: workspaceMember.status,
+      inviteExpiresAt: workspaceMember.inviteExpiresAt,
     })
+    .from(workspaceMember)
     .where(
       and(
         eq(workspaceMember.id, data.memberId),
         eq(workspaceMember.workspaceId, data.workspaceId)
       )
-    )
-    .returning({ email: workspaceMember.email });
+    );
+
+  const rotate = (client: Pick<typeof db, "update">) =>
+    client
+      .update(workspaceMember)
+      .set({
+        inviteToken: newToken,
+        inviteExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(workspaceMember.id, data.memberId),
+          eq(workspaceMember.workspaceId, data.workspaceId)
+        )
+      )
+      .returning({ email: workspaceMember.email });
+
+  // An expired invite no longer holds a seat — reviving it takes one, so it
+  // goes through the member/guest limit gate. Unexpired invites already count.
+  const wasExpired =
+    current?.status === "INVITED" &&
+    current.inviteExpiresAt !== null &&
+    current.inviteExpiresAt < new Date();
+
+  let member: { email: string | null } | undefined;
+  if (wasExpired) {
+    const outcome = await db.transaction(async (tx) => {
+      const capacity = await requireMemberCapacity(
+        tx,
+        data.workspaceId,
+        memberBucket(current.role)
+      );
+      if (capacity) {
+        return { blocked: capacity, row: undefined };
+      }
+      const [row] = await rotate(tx);
+      return { blocked: null, row };
+    });
+    if (outcome.blocked) {
+      return outcome.blocked;
+    }
+    member = outcome.row;
+  } else {
+    [member] = await rotate(db);
+  }
 
   if (member?.email) {
     const ws = await db
@@ -716,10 +970,29 @@ export async function changeMemberRole(data: {
     return { error: "Admins cannot grant Admin role" };
   }
 
-  await db
-    .update(workspaceMember)
-    .set({ role: data.role, updatedAt: new Date() })
-    .where(eq(workspaceMember.id, data.memberId));
+  // Moving between buckets (members <-> guests) takes a seat in the destination
+  // bucket, so gate it. Same-bucket changes (e.g. MEMBER -> ADMIN) don't.
+  const movesBucket = memberBucket(target[0].role) !== memberBucket(data.role);
+  const roleBlocked = await db.transaction(async (tx) => {
+    if (movesBucket) {
+      const capacity = await requireMemberCapacity(
+        tx,
+        data.workspaceId,
+        memberBucket(data.role)
+      );
+      if (capacity) {
+        return capacity;
+      }
+    }
+    await tx
+      .update(workspaceMember)
+      .set({ role: data.role, updatedAt: new Date() })
+      .where(eq(workspaceMember.id, data.memberId));
+    return null;
+  });
+  if (roleBlocked) {
+    return roleBlocked;
+  }
 
   if (target[0].userId) {
     createNotifications({

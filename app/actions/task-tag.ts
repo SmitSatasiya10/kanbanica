@@ -162,6 +162,59 @@ export async function deleteTag(
   return { ok: true };
 }
 
+// Resolves a batch of tag names to ids in one pass — case-insensitive match
+// against existing workspace tags, creating any that don't exist yet. Used by
+// the CSV importer (lib/import-export/bulk-import-tasks.ts) to resolve every
+// unique tag name across an entire import in one go, rather than looping
+// createTag/getWorkspaceTags per row. Mirrors createTag's own dedup/creation
+// rules so a workspace member can always freely add tags this way.
+export async function findOrCreateTagsByNames(
+  workspaceId: string,
+  names: string[]
+): Promise<Map<string, string>> {
+  const uniqueNames = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
+  const result = new Map<string, string>();
+  if (uniqueNames.length === 0) {
+    return result;
+  }
+
+  const existing = await db
+    .select({ id: tag.id, name: tag.name })
+    .from(tag)
+    .where(eq(tag.workspaceId, workspaceId));
+  const existingByLower = new Map(
+    existing.map((t) => [t.name.toLowerCase(), t.id])
+  );
+
+  const toCreate: { id: string; name: string }[] = [];
+  for (const name of uniqueNames) {
+    const found = existingByLower.get(name.toLowerCase());
+    if (found) {
+      result.set(name.toLowerCase(), found);
+    } else if (
+      !toCreate.some((c) => c.name.toLowerCase() === name.toLowerCase())
+    ) {
+      toCreate.push({ id: createId(), name });
+    }
+  }
+
+  if (toCreate.length > 0) {
+    await db.insert(tag).values(
+      toCreate.map((t) => ({
+        id: t.id,
+        workspaceId,
+        name: t.name,
+        color: randomTagColor(),
+      }))
+    );
+    for (const t of toCreate) {
+      result.set(t.name.toLowerCase(), t.id);
+    }
+  }
+
+  return result;
+}
+
 export async function removeTaskTag(
   workspaceId: string,
   spaceId: string,

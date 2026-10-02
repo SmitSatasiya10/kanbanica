@@ -461,6 +461,8 @@ export function ListContainer({
           )}
           {!showBoardSkeleton && view === "board" && (
             <BoardView
+              archivedLoading={archivedLoading}
+              archivedTasks={showArchived ? archivedTasks : []}
               canEdit={canEdit}
               canManage={canManage}
               customFields={customFields}
@@ -468,6 +470,18 @@ export function ListContainer({
               isAdmin={isAdmin}
               list={list}
               members={members}
+              onArchivedChanged={async () => {
+                const result = await getArchivedTasksForList(
+                  workspaceId,
+                  space.id,
+                  list.id
+                );
+                if (!("error" in result)) {
+                  setArchivedTasks(result.tasks);
+                }
+              }}
+              onToggleArchived={handleToggleArchived}
+              showArchived={showArchived}
               space={space}
               statuses={statuses}
               tags={tags}
@@ -477,9 +491,23 @@ export function ListContainer({
           )}
           {!showBoardSkeleton && view === "calendar" && (
             <CalendarView
+              archivedLoading={archivedLoading}
+              archivedTasks={showArchived ? archivedTasks : []}
               canEdit={canEdit}
               listId={list.id}
               members={members}
+              onArchivedChanged={async () => {
+                const result = await getArchivedTasksForList(
+                  workspaceId,
+                  space.id,
+                  list.id
+                );
+                if (!("error" in result)) {
+                  setArchivedTasks(result.tasks);
+                }
+              }}
+              onToggleArchived={handleToggleArchived}
+              showArchived={showArchived}
               spaceId={space.id}
               statuses={statuses}
               tasks={[...pinnedTasks, ...tasks]}

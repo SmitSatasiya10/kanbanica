@@ -10,7 +10,6 @@ import {
   inArray,
   isNull,
   notInArray,
-  sql,
 } from "drizzle-orm";
 import { headers } from "next/headers";
 import { spaceRecipientUserIds } from "@/app/actions/space";
@@ -33,7 +32,6 @@ import {
   taskWatcher,
   timeEntry,
   user,
-  workspace,
   workspaceMember,
 } from "@/db/schema";
 import { writeActivityLog } from "@/lib/activity-log";
@@ -57,6 +55,7 @@ import {
 } from "@/lib/permissions";
 import { refreshWorkspace } from "@/lib/realtime/refresh";
 import { storage } from "@/lib/storage";
+import { requireTaskCapacity } from "@/lib/workspace-limits";
 
 // ─── Permission helpers ──────────────────────────────────────────────────────
 // `requireEditAccess` / `requireViewAccess` now live in `lib/permissions.ts`
@@ -214,18 +213,19 @@ export async function createTask(
     }
   }
 
-  const [{ taskSeq }] = await db
-    .update(workspace)
-    .set({ taskSeq: sql`${workspace.taskSeq} + 1` })
-    .where(eq(workspace.id, workspaceId))
-    .returning({ taskSeq: workspace.taskSeq });
-
   const taskId = createId();
 
   const assigneeIds = [...new Set(data.assigneeIds ?? [])];
   const tagIds = [...new Set(data.tagIds ?? [])];
 
-  await db.transaction(async (tx) => {
+  const created = await db.transaction(async (tx) => {
+    // Workspace task-limit gate + seq reservation (locks the workspace row).
+    const capacity = await requireTaskCapacity(tx, workspaceId, 1);
+    if ("error" in capacity) {
+      return capacity;
+    }
+    const taskSeq = capacity.seqBase + 1;
+
     await tx.insert(task).values({
       id: taskId,
       seqNumber: taskSeq,
@@ -261,7 +261,11 @@ export async function createTask(
         .values(tagIds.map((tagId) => ({ taskId, tagId })))
         .onConflictDoNothing();
     }
+    return null;
   });
+  if (created) {
+    return created;
+  }
 
   await writeActivityLog(taskId, session.user.id, "task_created", { title });
 
@@ -1152,7 +1156,9 @@ export async function duplicateTask(
     .from(task)
     .where(eq(task.id, taskId))
     .limit(1);
-  if (!original) {
+  // The source must belong to the workspace the caller was authorised against
+  // (and whose task limit is checked below).
+  if (!original || original.workspaceId !== workspaceId) {
     return { error: "Task not found" };
   }
 
@@ -1195,14 +1201,14 @@ export async function duplicateTask(
 
   const newTaskId = createId();
 
-  await db.transaction(async (tx) => {
-    // Reserve a contiguous block of seq numbers in one atomic bump.
-    const [{ taskSeq }] = await tx
-      .update(workspace)
-      .set({ taskSeq: sql`${workspace.taskSeq} + ${sources.length}` })
-      .where(eq(workspace.id, workspaceId))
-      .returning({ taskSeq: workspace.taskSeq });
-    const seqBase = taskSeq - sources.length;
+  const duplicated = await db.transaction(async (tx) => {
+    // Task-limit gate for the whole copy (parent + subtasks, all-or-nothing),
+    // then a contiguous block of seq numbers in one atomic bump.
+    const capacity = await requireTaskCapacity(tx, workspaceId, sources.length);
+    if ("error" in capacity) {
+      return capacity;
+    }
+    const seqBase = capacity.seqBase;
 
     const taskMap = new Map<string, string>();
     taskMap.set(original.id, newTaskId);
@@ -1372,7 +1378,11 @@ export async function duplicateTask(
         await tx.insert(taskDependency).values(depRows);
       }
     }
+    return null;
   });
+  if (duplicated) {
+    return duplicated;
+  }
 
   // Fresh, clean history — a single "duplicated from #<seq>" entry, no replay.
   await writeActivityLog(newTaskId, session.user.id, "task_duplicated", {
@@ -1616,7 +1626,9 @@ export async function createSubtask(
     .from(task)
     .where(eq(task.id, parentTaskId))
     .limit(1);
-  if (!parentTask) {
+  // The parent must belong to the workspace the caller was authorised against
+  // (and whose task limit is checked below).
+  if (!parentTask || parentTask.workspaceId !== workspaceId) {
     return { error: "Parent task not found" };
   }
   if (parentTask.parentTaskId) {
@@ -1650,26 +1662,33 @@ export async function createSubtask(
     }
   }
 
-  const [{ taskSeq }] = await db
-    .update(workspace)
-    .set({ taskSeq: sql`${workspace.taskSeq} + 1` })
-    .where(eq(workspace.id, workspaceId))
-    .returning({ taskSeq: workspace.taskSeq });
-
   const taskId = createId();
 
-  await db.insert(task).values({
-    id: taskId,
-    seqNumber: taskSeq,
-    workspaceId,
-    listId: listId ?? null,
-    statusId,
-    title: trimmedTitle,
-    priority: "NONE",
-    reporterId: session.user.id,
-    parentTaskId,
-    orderIndex: taskSeq * 1000,
+  const created = await db.transaction(async (tx) => {
+    // Workspace task-limit gate + seq reservation (locks the workspace row).
+    const capacity = await requireTaskCapacity(tx, workspaceId, 1);
+    if ("error" in capacity) {
+      return capacity;
+    }
+    const taskSeq = capacity.seqBase + 1;
+
+    await tx.insert(task).values({
+      id: taskId,
+      seqNumber: taskSeq,
+      workspaceId,
+      listId: listId ?? null,
+      statusId,
+      title: trimmedTitle,
+      priority: "NONE",
+      reporterId: session.user.id,
+      parentTaskId,
+      orderIndex: taskSeq * 1000,
+    });
+    return null;
   });
+  if (created) {
+    return created;
+  }
 
   await writeActivityLog(taskId, session.user.id, "subtask_created", {
     title: trimmedTitle,

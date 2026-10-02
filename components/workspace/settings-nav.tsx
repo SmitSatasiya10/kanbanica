@@ -15,6 +15,7 @@ export function SettingsNav({ workspaceId, isOwner }: SettingsNavProps) {
   const items = [
     { label: "General", href: `/${workspaceId}/settings/general` },
     { label: "Members", href: `/${workspaceId}/settings/members` },
+    { label: "Limits", href: `/${workspaceId}/settings/limits` },
     ...(isOwner
       ? [{ label: "Security", href: `/${workspaceId}/settings/security` }]
       : []),

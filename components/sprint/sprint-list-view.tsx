@@ -237,6 +237,7 @@ function QuickCreateRow({
         statusId,
       });
       if ("error" in res) {
+        toast.error(res.error);
         return;
       }
       await addTaskToSprint(workspaceId, spaceId, sprintId, res.taskId);

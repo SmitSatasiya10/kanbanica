@@ -158,7 +158,11 @@ function TabsContent({
   className,
   value,
   ...props
-}: React.HTMLAttributes<HTMLDivElement> & { value: string }) {
+}: React.HTMLAttributes<HTMLDivElement> & {
+  value: string
+  /** false keeps inactive panels mounted (hidden) so their state survives tab switches. */
+  unmount?: boolean
+}) {
   const { registerValue } = useTabsContext("TabsContent")
   React.useLayoutEffect(() => {
     registerValue(value)

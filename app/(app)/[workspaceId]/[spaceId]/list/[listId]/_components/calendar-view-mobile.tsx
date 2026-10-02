@@ -1,9 +1,13 @@
 "use client";
 
 import {
+  ArchiveIcon,
   CaretLeftIcon,
   CaretRightIcon,
+  CheckIcon,
+  DotsThreeIcon,
   FunnelIcon,
+  KeyboardIcon,
   PlusIcon,
 } from "@phosphor-icons/react";
 import {
@@ -17,6 +21,12 @@ import {
 } from "date-fns";
 import * as React from "react";
 import { FacetOptionList } from "@/components/filters/facet-filter";
+import { ExportMenuRow } from "@/components/import-export/export-button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { SearchInput } from "@/components/ui/search-input";
 import {
   Sheet,
@@ -27,6 +37,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
 import { PRIORITY_OPTIONS } from "@/lib/filters/options";
 import { PRIORITY_CONFIG } from "@/lib/priority-config";
 import { cn } from "@/lib/utils";
@@ -84,10 +95,13 @@ function useSwipeNav(onSwipeLeft: () => void, onSwipeRight: () => void) {
 
 export function MobileCalendar({
   agendaDay,
+  archivedLoading,
+  archivedTasks,
   assigneeFilter,
   canEdit,
   gridDays,
   isPending,
+  listId,
   members,
   mobileFilterCount,
   mobileFiltersOpen,
@@ -98,13 +112,20 @@ export function MobileCalendar({
   onMobileFiltersOpenChange,
   onModeChange,
   onNavigate,
+  onOpenShortcuts,
   onOpenTask,
   onPriorityFilterChange,
   onResetFilters,
   onSearchChange,
+  onSortByChange,
+  onSortOrderChange,
   onStatusFilterChange,
+  onToggleArchived,
+  onUnarchiveTask,
   priorityFilter,
   searchQuery,
+  showArchived,
+  sortBy,
   statusById,
   statusFilter,
   statuses,
@@ -113,10 +134,13 @@ export function MobileCalendar({
   weekDays,
 }: {
   agendaDay: Date | null;
+  archivedLoading?: boolean;
+  archivedTasks?: { id: string; title: string; seqNumber: number }[];
   assigneeFilter: string[];
   canEdit: boolean;
   gridDays: Date[];
   isPending: boolean;
+  listId: string;
   members: Member[];
   mobileFilterCount: number;
   mobileFiltersOpen: boolean;
@@ -127,13 +151,20 @@ export function MobileCalendar({
   onMobileFiltersOpenChange: (open: boolean) => void;
   onModeChange: (mode: "week" | "month") => void;
   onNavigate: (next: Date) => void;
+  onOpenShortcuts: () => void;
   onOpenTask: (taskId: string) => void;
   onPriorityFilterChange: (v: string[]) => void;
   onResetFilters: () => void;
   onSearchChange: (v: string) => void;
+  onSortByChange: (v: "name" | "priority" | null) => void;
+  onSortOrderChange: React.Dispatch<React.SetStateAction<"asc" | "desc">>;
   onStatusFilterChange: (v: string[]) => void;
+  onToggleArchived?: () => void;
+  onUnarchiveTask: (taskId: string) => Promise<void>;
   priorityFilter: string[];
   searchQuery: string;
+  showArchived?: boolean;
+  sortBy: "name" | "priority" | null;
   statusById: Map<string, Status>;
   statusFilter: string[];
   statuses: Status[];
@@ -288,6 +319,65 @@ export function MobileCalendar({
               />
             </div>
           )}
+
+          <div className="h-px bg-base-300" />
+
+          <div>
+            <p className="mb-1.5 text-2xs font-bold uppercase tracking-wide text-base-content/60">
+              Sort
+            </p>
+            <div className="flex flex-col gap-0.5">
+              <button
+                className={cn(
+                  "rounded-md px-2.5 py-2 text-left text-sm font-medium hover:bg-base-200",
+                  !sortBy && "bg-base-200 text-base-content"
+                )}
+                onClick={() => onSortByChange(null)}
+                type="button"
+              >
+                None
+              </button>
+              <button
+                className={cn(
+                  "rounded-md px-2.5 py-2 text-left text-sm font-medium hover:bg-base-200",
+                  sortBy === "name" && "bg-base-200 text-base-content"
+                )}
+                onClick={() => {
+                  onSortByChange("name");
+                  onSortOrderChange((o) => (o === "asc" ? "desc" : "asc"));
+                }}
+                type="button"
+              >
+                Task Name
+              </button>
+              <button
+                className={cn(
+                  "rounded-md px-2.5 py-2 text-left text-sm font-medium hover:bg-base-200",
+                  sortBy === "priority" && "bg-base-200 text-base-content"
+                )}
+                onClick={() => {
+                  onSortByChange("priority");
+                  onSortOrderChange((o) => (o === "asc" ? "desc" : "asc"));
+                }}
+                type="button"
+              >
+                Priority
+              </button>
+            </div>
+          </div>
+
+          {onToggleArchived && (
+            <>
+              <div className="h-px bg-base-300" />
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">Show archived</span>
+                <Switch
+                  checked={!!showArchived}
+                  onCheckedChange={() => onToggleArchived()}
+                />
+              </div>
+            </>
+          )}
         </div>
         <SheetFooter className="flex-row gap-2 border-t border-base-300 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
           <button
@@ -308,6 +398,49 @@ export function MobileCalendar({
         </SheetFooter>
       </SheetContent>
     </Sheet>
+  );
+
+  // "More" — secondary actions (Export/Archived/Shortcuts), same pattern as
+  // List/Board's mobile "More actions" popover. Import is excluded: it
+  // targets a specific list/status context Calendar's date-based toolbar
+  // doesn't provide.
+  const moreEl = (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          aria-label="More actions"
+          className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-base-300 text-base-content/60 transition-colors hover:bg-base-200/30 hover:text-base-content"
+          type="button"
+        >
+          <DotsThreeIcon className="size-4" weight="bold" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-56 rounded-xl p-1.5">
+        <ExportMenuRow scope={{ kind: "list", listId }} />
+        {onToggleArchived && (
+          <button
+            className="flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-sm hover:bg-base-200"
+            onClick={() => onToggleArchived()}
+            type="button"
+          >
+            <span className="flex items-center gap-2">
+              <ArchiveIcon className="size-4 text-base-content/60" />
+              Archived Tasks
+            </span>
+            {showArchived && <CheckIcon className="size-4 text-primary" />}
+          </button>
+        )}
+        <div className="my-1 h-px bg-base-300" />
+        <button
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-base-200"
+          onClick={onOpenShortcuts}
+          type="button"
+        >
+          <KeyboardIcon className="size-4 text-base-content/60" />
+          Keyboard Shortcuts
+        </button>
+      </PopoverContent>
+    </Popover>
   );
 
   return (
@@ -355,7 +488,10 @@ export function MobileCalendar({
             {searchEl}
             <div className="flex items-center gap-2">
               {modeToggleEl}
-              <div className="ml-auto">{filterEl}</div>
+              <div className="ml-auto flex items-center gap-2">
+                {filterEl}
+                {moreEl}
+              </div>
             </div>
           </div>
         ) : (
@@ -363,6 +499,7 @@ export function MobileCalendar({
             {searchEl}
             {modeToggleEl}
             {filterEl}
+            {moreEl}
           </div>
         )}
 
@@ -376,6 +513,61 @@ export function MobileCalendar({
           </div>
         )}
       </div>
+
+      {/* Archived tasks — same data/actions as the desktop panel, in a
+          capped-height scrollable block so it can't push the grid off
+          screen on a short phone viewport. */}
+      {showArchived && (
+        <div className="max-h-40 shrink-0 overflow-y-auto border-b border-base-300 bg-base-200/20">
+          <div className="flex items-center gap-2 select-none bg-base-200/50 px-3 py-1.5 text-2xs font-bold uppercase tracking-wide text-base-content/60">
+            <ArchiveIcon className="size-3.5" />
+            Archived ({archivedTasks?.length ?? 0})
+          </div>
+          {(!archivedTasks || archivedTasks.length === 0) && (
+            <div className="px-3 py-3 text-center text-xs italic text-base-content/60">
+              {archivedLoading ? "Loading…" : "No archived tasks"}
+            </div>
+          )}
+          <div className="divide-y divide-border">
+            {archivedTasks?.map((t) => (
+              // biome-ignore lint/a11y/useSemanticElements: wraps a nested interactive "Unarchive" button, so it can't literally be a <button>; kept keyboard-accessible via role+tabIndex+onKeyDown
+              <div
+                className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors active:bg-base-200/60"
+                key={t.id}
+                onClick={() => onOpenTask(t.id)}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) {
+                    return;
+                  }
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onOpenTask(t.id);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+              >
+                <span className="shrink-0 select-none font-mono text-2xs text-base-content/60">
+                  #{t.seqNumber}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-xs font-medium text-base-content/60 line-through">
+                  {t.title}
+                </span>
+                <button
+                  className="shrink-0 cursor-pointer rounded-md border border-base-300 bg-base-100 px-2 py-1 text-2xs font-semibold text-base-content/60"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void onUnarchiveTask(t.id);
+                  }}
+                  type="button"
+                >
+                  Unarchive
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Grid body — Month keeps the 7-column calendar grid. Week instead
           stacks days as full-width agenda rows: squeezing 7 columns into a
