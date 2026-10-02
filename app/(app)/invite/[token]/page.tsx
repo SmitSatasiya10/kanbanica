@@ -7,8 +7,22 @@ import {
 } from "@phosphor-icons/react";
 import { useRouter } from "next/navigation";
 import * as React from "react";
-import { acceptInvite, declineInvite } from "@/app/actions/workspace";
+import {
+  acceptInvite,
+  declineInvite,
+  getInviteState,
+  type InviteErrorCode,
+} from "@/app/actions/workspace";
 import { Button } from "@/components/ui/button";
+
+const ERROR_TITLES: Record<InviteErrorCode, string> = {
+  auth_required: "Sign in required",
+  invalid: "Invitation invalid",
+  expired: "Invitation expired",
+  used: "Invitation unavailable",
+  wrong_user: "Wrong account",
+  rate_limited: "Too many attempts",
+};
 
 export default function InvitePage({
   params,
@@ -20,6 +34,7 @@ export default function InvitePage({
     "idle" | "loading" | "declining" | "success" | "declined" | "error"
   >("idle");
   const [errorMsg, setErrorMsg] = React.useState("");
+  const [errorCode, setErrorCode] = React.useState<InviteErrorCode>("invalid");
   const [workspaceId, setWorkspaceId] = React.useState("");
   const [token, setToken] = React.useState("");
   // Synchronous in-flight locks — a rapid double click/tap can fire the
@@ -32,6 +47,37 @@ export default function InvitePage({
     params.then((p) => setToken(p.token));
   }, [params]);
 
+  // Resolve the link's state up front, so an invite this user already accepted
+  // (refresh, reopened link, auto-activated at sign-in) goes straight to the
+  // workspace instead of surfacing as an error.
+  React.useEffect(() => {
+    if (!token) {
+      return;
+    }
+    let cancelled = false;
+    getInviteState(token).then((res) => {
+      if (cancelled) {
+        return;
+      }
+      if (res.state === "accepted") {
+        setWorkspaceId(res.workspaceId);
+        setStatus("success");
+        router.replace(`/${res.workspaceId}`);
+      } else if (res.state === "error") {
+        if (res.code === "auth_required") {
+          router.replace("/login");
+          return;
+        }
+        setErrorCode(res.code);
+        setErrorMsg(res.error);
+        setStatus("error");
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, router]);
+
   async function handleAccept() {
     if (!token || acceptingRef.current) {
       return;
@@ -43,9 +89,11 @@ export default function InvitePage({
       if ("error" in res) {
         setStatus("error");
         setErrorMsg(res.error);
+        setErrorCode(res.code);
       } else {
         setWorkspaceId(res.workspaceId);
         setStatus("success");
+        router.replace(`/${res.workspaceId}`);
       }
     } finally {
       acceptingRef.current = false;
@@ -123,7 +171,7 @@ export default function InvitePage({
       <div className="h-full overflow-auto flex items-center justify-center bg-base-200/30 p-4">
         <div className="bg-base-100 rounded-xl border shadow-sm p-8 max-w-sm w-full text-center space-y-4">
           <XCircleIcon className="size-12 text-error mx-auto" weight="fill" />
-          <h1 className="text-lg font-semibold">Invitation invalid</h1>
+          <h1 className="text-lg font-semibold">{ERROR_TITLES[errorCode]}</h1>
           <p className="text-sm text-base-content/60">{errorMsg}</p>
           <Button
             className="w-full"

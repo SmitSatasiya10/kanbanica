@@ -165,18 +165,22 @@ export function SpaceMembersManager({
                   onValueChange={setSelectedUserId}
                   value={selectedUserId}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger className="w-full">
                     <SelectValue placeholder="Select a member…" />
                   </SelectTrigger>
                   <SelectContent className="p-1.5">
                     {addableMembers.map((m) => (
                       <SelectItem key={m.userId} value={m.userId}>
-                        {m.name ?? m.email}
-                        {m.name && (
-                          <span className="text-base-content/60 ml-1 text-xs">
-                            {m.email}
+                        <span className="flex min-w-0 items-baseline gap-2">
+                          <span className="shrink-0">
+                            {m.name?.trim() || m.email}
                           </span>
-                        )}
+                          {m.name?.trim() && (
+                            <span className="truncate text-base-content/60 text-xs">
+                              {m.email}
+                            </span>
+                          )}
+                        </span>
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -191,7 +195,7 @@ export function SpaceMembersManager({
                   }
                   value={selectedPermission}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="p-1.5">
@@ -248,7 +252,7 @@ export function SpaceMembersManager({
               />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium truncate">
-                  {member.user.name ?? member.user.email}
+                  {member.user.name?.trim() || member.user.email}
                 </p>
                 {member.user.name && (
                   <p className="text-xs text-base-content/60 truncate">
@@ -294,9 +298,9 @@ export function SpaceMembersManager({
                     <AlertDialogHeader>
                       <AlertDialogTitle>Remove member?</AlertDialogTitle>
                       <AlertDialogDescription>
-                        {member.user.name ?? member.user.email} will lose
-                        explicit access to this Project. They remain a workspace
-                        member.
+                        {member.user.name?.trim() || member.user.email} will
+                        lose explicit access to this Project. They remain a
+                        workspace member.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>

@@ -1,0 +1,7 @@
+# Shell scripts must stay LF in every working tree, including Windows checkouts
+# with core.autocrlf=true. The Dockerfile copies the working tree straight into
+# the image and runs scripts/docker-entrypoint.sh as the container's ENTRYPOINT —
+# a CRLF checkout bakes in `\r` and the container dies on start with
+# "/usr/bin/env: 'bash\r': No such file or directory". Same for
+# scripts/lint-tokens.sh under `pnpm lint:tokens`.
+*.sh text eol=lf

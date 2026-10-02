@@ -9,6 +9,7 @@ import {
   INVITE_LINK_EXHAUSTED_MESSAGE,
   INVITE_LINK_EXPIRED_MESSAGE,
 } from "@/lib/invite-link";
+import { completeProfileUrl, userHasDisplayName } from "@/lib/profile-name";
 import { JoinError, JoinWorkspaceCard } from "./join-client";
 
 export const metadata = { title: `Join workspace — ${PRODUCT_NAME}` };
@@ -39,6 +40,10 @@ export default async function JoinPage({
     // visitor signs in (any method) `/post-auth` reads the cookie and joins
     // them — no need to click the invite link a second time.
     redirect(`/api/join/${encodeURIComponent(token)}`);
+  }
+
+  if (!(await userHasDisplayName(session.user.id))) {
+    redirect(completeProfileUrl(`/join/${token}`));
   }
 
   const [ws] = await db

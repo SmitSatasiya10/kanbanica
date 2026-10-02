@@ -6,7 +6,8 @@ import { workspace, workspaceMember } from "@/db/schema";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { LAST_WORKSPACE_COOKIE } from "@/lib/last-workspace";
-import { readPendingJoin } from "@/lib/pending-join";
+import { readPendingInvite, readPendingJoin } from "@/lib/pending-join";
+import { completeProfileUrl, userHasDisplayName } from "@/lib/profile-name";
 import { redirectToSetupIfNeeded } from "@/lib/setup";
 import { getWorkspaceLandingState } from "@/lib/workspace-landing";
 
@@ -15,6 +16,18 @@ export default async function PostAuthPage() {
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session) {
     redirect("/login");
+  }
+
+  // First-time users (no display name) set one before any invite is
+  // auto-accepted / link join is consumed; the form returns here afterwards.
+  if (!(await userHasDisplayName(session.user.id))) {
+    redirect(completeProfileUrl("/post-auth"));
+  }
+
+  // A logged-out visitor's `/invite/<token>` was stashed across login — go back
+  // to it (after the name step above; the invite page does the accepting).
+  if (await readPendingInvite()) {
+    redirect("/api/invite/consume");
   }
 
   // Auto-accept any invitations addressed to this user's email so invited users
